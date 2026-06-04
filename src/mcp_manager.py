@@ -56,12 +56,14 @@ class McpManager:
         env: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
     ) -> bool:
-        """Connect to an MCP server via stdio or SSE transport."""
+        """Connect to an MCP server via stdio, SSE, or Streamable HTTP transport."""
         try:
             if transport == "stdio":
                 res = await self._connect_stdio(server_id, name, command, args or [], env or {})
             elif transport == "sse":
                 res = await self._connect_sse(server_id, name, url)
+            elif transport in ("streamable-http", "http"):
+                res = await self._connect_streamable_http(server_id, name, url)
             else:
                 logger.error(f"Unknown MCP transport: {transport}")
                 res = False
@@ -177,6 +179,108 @@ class McpManager:
             }
 
             logger.info(f"MCP server connected: {name} ({server_id}) - {len(tools)} tools via SSE")
+            return True
+
+        except ImportError:
+            logger.warning("MCP package not installed. Install with: pip install mcp")
+            self._connections[server_id] = {"status": "error", "error": "mcp package not installed", "name": name}
+            return False
+
+    async def _preflight_streamable_http(self, url: str) -> None:
+        """Validate a Streamable HTTP MCP endpoint with a short, plain HTTP probe.
+
+        Sends an `initialize` request and inspects the status code so that auth
+        failures (401/403) and unreachable URLs raise a clear error in seconds,
+        rather than hanging the subsequent MCP session handshake. Raises
+        RuntimeError on a definitive failure; returns quietly on success.
+        """
+        import httpx
+
+        probe = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "odysseus", "version": "1.0"},
+            },
+        }
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        # Stream the response so we read only the status line and close
+        # immediately — a valid key may return a long-lived SSE stream that a
+        # buffered request would block on until the timeout (a false failure).
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                async with client.stream("POST", url, json=probe, headers=headers) as resp:
+                    status = resp.status_code
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"Could not reach the remote MCP server: {e}")
+
+        if status in (401, 403):
+            raise RuntimeError(
+                f"Remote MCP server rejected the request (HTTP {status}). "
+                "Check the access key/token in the URL."
+            )
+        if status >= 400:
+            raise RuntimeError(
+                f"Remote MCP server returned HTTP {status} for the URL. "
+                "Verify the endpoint path is correct."
+            )
+
+    async def _connect_streamable_http(self, server_id: str, name: str, url: str) -> bool:
+        """Connect to an MCP server via Streamable HTTP transport.
+
+        This is the modern remote transport (opencode calls it "remote"). Unlike
+        sse_client, streamablehttp_client yields a 3-tuple — the third element is
+        a get-session-id callback we don't need but must unpack.
+        """
+        try:
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+            from contextlib import AsyncExitStack
+
+            # Preflight: a bad/missing access key makes the streamable-HTTP client
+            # raise its 401 inside a background task that never unblocks
+            # session.initialize() — so the real handshake would hang forever, and
+            # anyio/asyncio timeouts can't cleanly cancel the client's own task
+            # group. Probe with a plain HTTP initialize first so auth/URL failures
+            # surface fast and clearly instead of freezing the Add-Server request.
+            await self._preflight_streamable_http(url)
+
+            stack = AsyncExitStack()
+            try:
+                transport = await stack.enter_async_context(streamablehttp_client(url, timeout=15))
+                read_stream, write_stream, _get_session_id = transport
+                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+
+                await session.initialize()
+                tools_result = await session.list_tools()
+            except Exception:
+                await stack.aclose()
+                raise
+            tools = []
+            for tool in tools_result.tools:
+                tools.append({
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
+                })
+
+            self._sessions[server_id] = session
+            self._stacks[server_id] = stack
+            self._tools[server_id] = tools
+            self._connections[server_id] = {
+                "status": "connected",
+                "name": name,
+                "transport": "streamable-http",
+                "tool_count": len(tools),
+            }
+
+            logger.info(f"MCP server connected: {name} ({server_id}) - {len(tools)} tools via Streamable HTTP")
             return True
 
         except ImportError:

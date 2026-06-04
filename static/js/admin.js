@@ -1561,10 +1561,11 @@ function initMcpForm() {
   }
 
   transportSel.addEventListener('change', () => {
-    const isSse = transportSel.value === 'sse';
-    sseRow.style.display = isSse ? '' : 'none';
-    cmdRow.style.display = isSse ? 'none' : '';
-    if (isSse) { _clearEnvFields(); helpBox.style.display = 'none'; }
+    // SSE and Streamable HTTP are both URL-based; only stdio needs command/args/env.
+    const isUrlBased = transportSel.value !== 'stdio';
+    sseRow.style.display = isUrlBased ? '' : 'none';
+    cmdRow.style.display = isUrlBased ? 'none' : '';
+    if (isUrlBased) { _clearEnvFields(); helpBox.style.display = 'none'; }
   });
 
   // Preset catalog
@@ -1606,7 +1607,7 @@ function initMcpForm() {
     const msg = el('adm-mcpMsg');
     if (!name) { msg.textContent = 'Name is required'; msg.className = 'admin-error'; return; }
     if (transport === 'stdio' && !command) { msg.textContent = 'Command is required for stdio'; msg.className = 'admin-error'; return; }
-    if (transport === 'sse' && !url) { msg.textContent = 'URL is required for SSE'; msg.className = 'admin-error'; return; }
+    if (transport !== 'stdio' && !url) { msg.textContent = 'URL is required for ' + transport; msg.className = 'admin-error'; return; }
     try { JSON.parse(env); } catch { msg.textContent = 'Env must be valid JSON'; msg.className = 'admin-error'; return; }
     const fd = new FormData();
     fd.append('name', name); fd.append('transport', transport); fd.append('command', command); fd.append('args', args); fd.append('env', env); fd.append('url', url);

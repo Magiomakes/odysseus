@@ -4257,22 +4257,23 @@ async function initUnifiedIntegrations() {
           <h2 style="font-size:13px">Add MCP Server</h2>
           <div class="settings-col">
             <div class="settings-row"><label class="settings-label">Name</label><input id="uf-mcp-name" class="settings-input" placeholder="Server name"></div>
-            <div class="settings-row"><label class="settings-label">Transport</label><select id="uf-mcp-transport" class="settings-input"><option value="stdio">stdio</option><option value="sse">SSE</option></select></div>
+            <div class="settings-row"><label class="settings-label">Transport</label><select id="uf-mcp-transport" class="settings-input"><option value="stdio">stdio</option><option value="sse">SSE</option><option value="streamable-http">Remote (HTTP)</option></select></div>
             <div id="uf-mcp-stdio-fields" style="display:flex;flex-direction:column;gap:6px;">
               <div class="settings-row"><label class="settings-label">Command</label><input id="uf-mcp-cmd" class="settings-input" placeholder="npx"></div>
               <div class="settings-row"><label class="settings-label">Args</label><input id="uf-mcp-args" class="settings-input" placeholder='["-y", "@modelcontextprotocol/server-filesystem"]'></div>
               <div class="settings-row"><label class="settings-label">Env</label><input id="uf-mcp-env" class="settings-input" placeholder='{"KEY": "value"}'></div>
             </div>
             <div id="uf-mcp-sse-fields" style="display:none;flex-direction:column;gap:6px;">
-              <div class="settings-row"><label class="settings-label">URL</label><input id="uf-mcp-url" class="settings-input" placeholder="http://localhost:3001/sse"></div>
+              <div class="settings-row"><label class="settings-label">URL</label><input id="uf-mcp-url" class="settings-input" placeholder="https://host/path?key=YOUR_TOKEN"></div>
             </div>
             <div class="settings-row" style="margin-top:4px"><button class="admin-btn-sm" id="uf-mcp-save">Save</button><button class="admin-btn-sm" id="uf-mcp-cancel" style="opacity:0.7">Cancel</button><span id="uf-mcp-msg" style="font-size:11px"></span></div>
           </div>
         </div>`;
       el('uf-mcp-transport').addEventListener('change', () => {
-        const sse = el('uf-mcp-transport').value === 'sse';
-        el('uf-mcp-stdio-fields').style.display = sse ? 'none' : 'flex';
-        el('uf-mcp-sse-fields').style.display = sse ? 'flex' : 'none';
+        // SSE and Streamable HTTP are both URL-based; only stdio needs command/args.
+        const urlBased = el('uf-mcp-transport').value !== 'stdio';
+        el('uf-mcp-stdio-fields').style.display = urlBased ? 'none' : 'flex';
+        el('uf-mcp-sse-fields').style.display = urlBased ? 'flex' : 'none';
       });
       el('uf-mcp-cancel').addEventListener('click', () => { formEl.style.display = 'none'; });
       el('uf-mcp-save').addEventListener('click', async () => {

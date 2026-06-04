@@ -353,11 +353,11 @@ class McpServer(TimestampMixin, Base):
 
     id = Column(String, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    transport = Column(String, nullable=False, default="stdio")  # "stdio" or "sse"
+    transport = Column(String, nullable=False, default="stdio")  # "stdio", "sse", or "streamable-http"
     command = Column(String, nullable=True)      # For stdio: executable path
     args = Column(Text, nullable=True)           # JSON array of command args
     env = Column(Text, nullable=True)            # JSON object of env vars
-    url = Column(String, nullable=True)          # For SSE: server URL
+    url = Column(String, nullable=True)          # For SSE / Streamable HTTP: server URL
     is_enabled = Column(Boolean, default=True)
     oauth_config = Column(Text, nullable=True)   # JSON: provider, keys_file, token_file, scopes
     disabled_tools = Column(Text, nullable=True)  # JSON array of tool names to hide from LLM

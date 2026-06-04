@@ -101,6 +101,8 @@ def setup_mcp_routes(mcp_manager: McpManager):
             raise HTTPException(400, "command is required for stdio transport")
         if transport == "sse" and not url:
             raise HTTPException(400, "url is required for SSE transport")
+        if transport in ("streamable-http", "http") and not url:
+            raise HTTPException(400, "url is required for Streamable HTTP transport")
 
         # Parse JSON fields
         try:
