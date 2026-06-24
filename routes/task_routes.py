@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from core.database import SessionLocal, ScheduledTask, TaskRun
 from core.middleware import INTERNAL_TOOL_USER
 from core.constants import internal_api_base
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, effective_user
 from src.constants import DATA_DIR, EMAIL_URGENCY_CACHE_DIR
 from src.task_scheduler import compute_next_run, HOUSEKEEPING_DEFAULTS
 from routes.prefs_routes import _load_for_user, _save_for_user
@@ -187,6 +187,11 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
     defs = HOUSEKEEPING_DEFAULTS.get(t.action) if t.action else None
     d = {
         "id": t.id,
+        # Surface the resolved owner so API clients (e.g. a bearer-token
+        # integration) can confirm the bearer->owner attribution end-to-end
+        # rather than guessing. The list/get routes are already owner-scoped,
+        # so this exposes nothing a caller can't already see.
+        "owner": t.owner,
         "name": _display_task_name(t),
         "prompt": t.prompt,
         "task_type": t.task_type or "llm",
@@ -295,7 +300,15 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
     def _owner(request: Request):
-        return get_current_user(request)
+        # Attribute task CRUD to the real human behind the request. For cookie
+        # sessions this is identical to get_current_user; for a bearer token it
+        # credits the token's minting owner instead of the sandboxed "api"
+        # pseudo-user, so externally-created tasks (and their completion
+        # notifications, which fan out to task.owner) land in that owner's task
+        # list rather than siloing under "api" where their named-login UI never
+        # sees them. A token with no owner still falls back to get_current_user,
+        # so this never escalates privileges.
+        return effective_user(request)
 
     async def _generate_task_name(prompt: str, owner: Optional[str] = None) -> str:
         """Use LLM to generate a short task name from the prompt."""
