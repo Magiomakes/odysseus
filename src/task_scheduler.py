@@ -1902,35 +1902,62 @@ class TaskScheduler:
             )[1:]
         except Exception:
             _task_fallbacks = []
-        async for event_str in stream_agent_loop(
-            endpoint_url=endpoint_url,
-            model=model,
-            messages=messages,
-            max_rounds=_task_max_rounds,
-            session_id=session_id,
-            owner=task.owner,
-            headers=headers,
-            disabled_tools=disabled_tools,
-            relevant_tools=relevant_tools,
-            fallbacks=_task_fallbacks,
-            workload="background",
-        ):
-            if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
-                try:
-                    data = json.loads(event_str[6:])
-                    # Capture text from all event types, not just delta
-                    if "delta" in data:
-                        if data.get("thinking"):
-                            continue
-                        full_text += data["delta"]
-                    elif data.get("type") == "tool_output":
-                        # Tool results — capture summary so we have SOMETHING even
-                        # if the model never produces a final text response
-                        tool_summary = data.get("stdout") or data.get("output") or data.get("result") or ""
-                        if isinstance(tool_summary, str) and tool_summary.strip():
-                            tool_results.append(f"[{data.get('tool', '?')}] {tool_summary[:500]}")
-                except (json.JSONDecodeError, KeyError):
-                    pass
+        async def _consume_stream():
+            nonlocal full_text
+            async for event_str in stream_agent_loop(
+                endpoint_url=endpoint_url,
+                model=model,
+                messages=messages,
+                max_rounds=_task_max_rounds,
+                session_id=session_id,
+                owner=task.owner,
+                headers=headers,
+                disabled_tools=disabled_tools,
+                relevant_tools=relevant_tools,
+                fallbacks=_task_fallbacks,
+                workload="background",
+            ):
+                if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
+                    try:
+                        data = json.loads(event_str[6:])
+                        # Capture text from all event types, not just delta
+                        if "delta" in data:
+                            if data.get("thinking"):
+                                continue
+                            full_text += data["delta"]
+                        elif data.get("type") == "tool_output":
+                            # Tool results — capture summary so we have SOMETHING even
+                            # if the model never produces a final text response
+                            tool_summary = data.get("stdout") or data.get("output") or data.get("result") or ""
+                            if isinstance(tool_summary, str) and tool_summary.strip():
+                                tool_results.append(f"[{data.get('tool', '?')}] {tool_summary[:500]}")
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+        # Wall-clock cap on the whole agent loop. Task execution holds the
+        # single serial slot (Semaphore(1)); without a ceiling, one wedged or
+        # slow stream — a half-open connection that trickles bytes under the
+        # per-read httpx timeout, or a long tool chain — holds that slot
+        # indefinitely and every later task queues behind it forever (the
+        # scheduler keeps ticking but nothing ever runs). On timeout we cancel
+        # the stream, keep whatever partial text was collected, and return so
+        # the slot frees and the queue drains. 0 disables the cap.
+        from src.settings import get_setting
+        _budget = int(get_setting("task_agent_timeout_seconds", 900) or 0)
+        if _budget > 0:
+            try:
+                await asyncio.wait_for(_consume_stream(), timeout=_budget)
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "Task %s agent loop exceeded the %ss wall-clock budget "
+                    "(task_agent_timeout_seconds); cancelled the stream and "
+                    "released the execution slot.",
+                    getattr(task, "id", "?"), _budget,
+                )
+                _note = "[Task stopped: exceeded the configured time budget (task_agent_timeout_seconds).]"
+                full_text = (full_text.strip() + "\n\n" + _note) if full_text.strip() else _note
+        else:
+            await _consume_stream()
 
         # Grace summarization — if the model exhausted rounds on tool calls
         # without producing a final text response, do one last LLM call
