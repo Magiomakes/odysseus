@@ -109,6 +109,14 @@ class WebFetchTool:
         if not low.startswith(("http://", "https://")):
             url = "https://" + url
         loop = asyncio.get_running_loop()
+        # SSRF guard (local mod, src/net_guard.py): task-agent prompts are built
+        # from untrusted input, so private/loopback targets are refused unless
+        # the hostname is on WEB_FETCH_ALLOWLIST. Resolution is blocking —
+        # run it in the executor with the fetch.
+        from src.net_guard import check_fetch_target
+        refusal = await loop.run_in_executor(None, lambda: check_fetch_target(url))
+        if refusal:
+            return {"error": f"web_fetch: refused: {refusal}", "exit_code": 1}
         try:
             def _fetch():
                 kwargs = {"timeout": 10}
