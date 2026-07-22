@@ -71,6 +71,10 @@ _PASSIVE_PREFIXES = (
     "/api/chat/stream_status",
     "/api/health",
     "/api/prefs",
+    # The My Tasks board polls while agents work; its reads/edits never touch
+    # the model, and treating them as foreground would cancel the very agent
+    # runs the board exists to watch (watch the worker → kill the worker).
+    "/api/board/",
 )
 
 
