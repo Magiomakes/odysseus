@@ -134,6 +134,15 @@ DEFAULT_SETTINGS = {
     "tool_path_extra_roots": [],
     "task_endpoint_id": "",
     "task_model": "",
+    # Hard wall-clock cap (seconds) on a single scheduled task's agent loop.
+    # Task execution holds the serial Semaphore(1) slot, so one wedged or slow
+    # stream — a half-open connection that trickles bytes under the per-read
+    # httpx timeout, or a long tool chain — would otherwise hold that slot
+    # indefinitely and stall every later task (observed as "no task fired for
+    # weeks"). On expiry the stream is cancelled, any partial output is kept,
+    # and the slot is released. 900s (15 min) is comfortable for local agent /
+    # research runs while still bounding a runaway job. Set to 0 to disable.
+    "task_agent_timeout_seconds": 900,
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.

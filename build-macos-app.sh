@@ -78,6 +78,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 UVICORN="$INSTALL_DIR/venv/bin/uvicorn"
 LOG="$INSTALL_DIR/logs/odysseus-app.log"
 
+# Bind address: honor APP_BIND from .env (0.0.0.0 exposes LAN/Tailscale), default loopback.
+HOST="$(/usr/bin/grep -E '^[[:space:]]*APP_BIND=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+[ -n "$HOST" ] || HOST="127.0.0.1"
+
 notify() { /usr/bin/osascript -e "display notification \"$1\" with title \"Odysseus\"" >/dev/null 2>&1; }
 die_gui() {
   /usr/bin/osascript -e "display dialog \"$1\" with title \"Odysseus\" buttons {\"OK\"} default button 1 with icon stop" >/dev/null 2>&1
@@ -120,9 +124,9 @@ fi
 notify "Starting…"
 cd "$INSTALL_DIR" || die_gui "Install folder not found: $INSTALL_DIR"
 if [ "$(uname -m)" = "arm64" ]; then
-  arch -arm64 "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+  arch -arm64 "$UVICORN" app:app --host "$HOST" --port "$PORT" >>"$LOG" 2>&1 &
 else
-  "$UVICORN" app:app --host 127.0.0.1 --port "$PORT" >>"$LOG" 2>&1 &
+  "$UVICORN" app:app --host "$HOST" --port "$PORT" >>"$LOG" 2>&1 &
 fi
 SERVER_PID=$!
 

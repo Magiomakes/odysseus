@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -49,6 +50,129 @@ def compose_task_relevant_tools(rag_tools, assistant_always, disabled_tools):
     if disabled_tools:
         tools -= set(disabled_tools)
     return tools
+
+
+# ── Grounding pull (even-odysseus "pull, not push" model) ───────────────────
+# A scheduled task's prompt may instruct the agent to GET a reachable URL for
+# grounding before acting — e.g. even-odysseus (ADR-0007) passes a session URL
+# ("GET {base}/api/sessions/<id> and ground every specific in it; do not invent
+# unsupported details") rather than pushing the session content into the prompt.
+# The research executor runs a search-only pipeline with NO tool loop, so it can
+# never obey that on its own — it flags the context as unavailable or fabricates.
+# We pre-fetch any ALLOWLISTED URL named in the prompt and inject the body as
+# grounding context, realizing the pull model without pushing content (ADR-0007).
+#
+# Strictly allowlisted via WEB_FETCH_ALLOWLIST (comma-separated hostnames): an
+# autonomous task must never be steerable into an SSRF fetch of an arbitrary
+# host by a crafted prompt. Empty allowlist => feature off (no pull).
+_GROUNDING_URL_RE = re.compile(r"https?://[^\s<>\"')]+")
+
+
+def _grounding_allowlist() -> set:
+    """Hostnames a scheduled task is permitted to pull grounding from."""
+    raw = os.getenv("WEB_FETCH_ALLOWLIST", "") or ""
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _extract_grounding_urls(text: str, allowlist: set) -> list:
+    """URLs in ``text`` whose host is allowlisted (deduped, order-preserved)."""
+    if not text or not allowlist:
+        return []
+    from urllib.parse import urlparse
+
+    out: list = []
+    seen: set = set()
+    for m in _GROUNDING_URL_RE.finditer(text):
+        url = m.group(0).rstrip(".,);]")
+        host = (urlparse(url).hostname or "").lower()
+        if host in allowlist and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _format_grounding(url: str, resp) -> str:
+    """Render a fetched response as a labelled grounding block.
+
+    Knows the even-odysseus session shape ({transcript, record, meta, ...});
+    falls back to the whole JSON, or the raw text body for non-JSON.
+    """
+    ctype = (resp.headers.get("content-type", "") or "").lower()
+    if "json" in ctype:
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            parts = [f"Source: {url}"]
+            meta = data.get("meta")
+            transcript = data.get("transcript")
+            record = data.get("record")
+            if meta:
+                parts.append("[meta]\n" + json.dumps(meta)[:1000])
+            if transcript:
+                parts.append("[transcript]\n" + str(transcript))
+            if record is not None:
+                parts.append(
+                    "[record]\n"
+                    + (record if isinstance(record, str) else json.dumps(record))
+                )
+            if len(parts) == 1:  # none of the known fields present
+                parts.append(json.dumps(data)[:8000])
+            return "\n".join(parts)
+    return f"Source: {url}\n{resp.text}"
+
+
+async def _fetch_grounding_context(
+    prompt: str, *, timeout: float = 15.0, max_chars: int = 12000
+) -> str:
+    """Pull allowlisted URLs named in ``prompt`` and format them as grounding.
+
+    Returns a context block to prepend to the task input, or "" when there is
+    nothing to pull. Best-effort: a fetch failure is logged and skipped so a
+    grounding miss degrades to the un-grounded run rather than failing the task.
+    """
+    urls = _extract_grounding_urls(prompt or "", _grounding_allowlist())
+    if not urls:
+        return ""
+    import httpx
+
+    blocks: list = []
+    # follow_redirects=False + manual hops: the allowlist checked the URL in
+    # the prompt, so every redirect TARGET must re-pass it too — otherwise an
+    # allowlisted host could bounce the fetch to an internal service and the
+    # SSRF invariant (test_task_grounding_fetch) would hold only for hop 0.
+    allow = _grounding_allowlist()
+    from urllib.parse import urlparse, urljoin
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        for url in urls[:3]:
+            try:
+                resp = None
+                hop_url = url
+                for _hop in range(4):
+                    resp = await client.get(hop_url)
+                    if not resp.is_redirect:
+                        break
+                    hop_url = urljoin(hop_url, resp.headers.get("location", ""))
+                    if (urlparse(hop_url).hostname or "").lower() not in allow:
+                        raise RuntimeError(
+                            f"redirect target off-allowlist: {hop_url[:120]}")
+                resp.raise_for_status()
+            except Exception:
+                logger.warning("grounding pull failed for %s", url, exc_info=True)
+                continue
+            blocks.append(_format_grounding(url, resp))
+    if not blocks:
+        return ""
+    body = "\n\n".join(blocks)
+    if len(body) > max_chars:
+        body = body[:max_chars] + "\n[...truncated]"
+    logger.info("grounding pull: injected %d source(s)", len(blocks))
+    return (
+        "GROUNDING CONTEXT (pulled from the source named in the task; treat this "
+        "as the authoritative basis and do not invent specifics it does not "
+        "support):\n\n" + body
+    )
 
 
 # ── Shared TTL cache (singleflight) ────────────────────────────────────────
@@ -341,7 +465,11 @@ class TaskScheduler:
         # event bus fires from background tasks. Without this lock long-running
         # tasks could be double-dispatched.
         self._executing_lock = asyncio.Lock()
-        self._pending_notifications = []  # completed task notifications
+        # Completed-task notifications. Backed by a JSON file under DATA_DIR
+        # so undelivered results survive a server restart — previously they
+        # lived only in this list and a restart silently discarded every
+        # result the user hadn't had the app open to receive.
+        self._pending_notifications = self._load_notifications()
         self._task_defer_counts = {}
         # Strict serial execution — exactly one task runs at a time. Anything
         # else (manual trigger, scheduled dispatch, task chain) waits behind
@@ -397,6 +525,33 @@ class TaskScheduler:
             logger.debug("Task abort marker failed for %s", task_id, exc_info=True)
             return False
 
+    @staticmethod
+    def _notifications_file() -> str:
+        from src.constants import DATA_DIR
+        return os.path.join(DATA_DIR, "task_notifications.json")
+
+    def _load_notifications(self) -> list:
+        """Restore undelivered notifications persisted by a previous run."""
+        try:
+            with open(self._notifications_file(), encoding="utf-8") as f:
+                notes = json.load(f)
+            if isinstance(notes, list):
+                return [n for n in notes if isinstance(n, dict)][-50:]
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Could not restore pending task notifications", exc_info=True)
+        return []
+
+    def _save_notifications(self):
+        try:
+            tmp = self._notifications_file() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._pending_notifications, f, ensure_ascii=False)
+            os.replace(tmp, self._notifications_file())
+        except Exception:
+            logger.warning("Could not persist pending task notifications", exc_info=True)
+
     def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None):
         """Store a notification about a completed task run. Tagged with the
         task's owner so `pop_notifications` can return only that user's
@@ -414,6 +569,7 @@ class TaskScheduler:
         # Cap at 50 to avoid unbounded growth
         if len(self._pending_notifications) > 50:
             self._pending_notifications = self._pending_notifications[-50:]
+        self._save_notifications()
 
     def pop_notifications(self, owner: str = None) -> list:
         """Return and clear pending notifications.
@@ -427,6 +583,7 @@ class TaskScheduler:
         if owner is None:
             notes = self._pending_notifications[:]
             self._pending_notifications.clear()
+            self._save_notifications()
             return notes
         # Strict owner scope — used to OR-in null-owner notifications for
         # "legacy single-user" compat but that leaked notification bodies to
@@ -438,6 +595,8 @@ class TaskScheduler:
             else:
                 keep.append(n)
         self._pending_notifications = keep
+        if take:
+            self._save_notifications()
         return take
 
     async def start(self):
@@ -1680,6 +1839,27 @@ class TaskScheduler:
             and (getattr(task, "action", "") or "") in self._SILENT_ACTIONS
         ):
             return
+
+        # email_results side-channel: the column has existed in the schema
+        # (and defaulted on) since task creation, but no code ever read it —
+        # results targeted at 'notification' only lived in the in-process
+        # queue and died with the server. When set on an llm/research task,
+        # email a copy through the account SMTP so results reach the user
+        # even when the app is closed. Restricted to llm/research so
+        # event-triggered housekeeping actions can't spam the inbox; skipped
+        # when the output target is itself an email address (double-send).
+        if (
+            getattr(task, "email_results", None)
+            and (getattr(task, "task_type", "") or "llm") in ("llm", "research")
+            and not self._is_email_output_target(output)
+        ):
+            try:
+                await self._deliver_via_email("email", task, result)
+            except Exception:
+                logger.warning(
+                    "email_results copy failed for task %s", task.id, exc_info=True
+                )
+
         if output.startswith("mcp__"):
             await self._deliver_via_mcp(output, task, result)
             return
@@ -1902,35 +2082,62 @@ class TaskScheduler:
             )[1:]
         except Exception:
             _task_fallbacks = []
-        async for event_str in stream_agent_loop(
-            endpoint_url=endpoint_url,
-            model=model,
-            messages=messages,
-            max_rounds=_task_max_rounds,
-            session_id=session_id,
-            owner=task.owner,
-            headers=headers,
-            disabled_tools=disabled_tools,
-            relevant_tools=relevant_tools,
-            fallbacks=_task_fallbacks,
-            workload="background",
-        ):
-            if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
-                try:
-                    data = json.loads(event_str[6:])
-                    # Capture text from all event types, not just delta
-                    if "delta" in data:
-                        if data.get("thinking"):
-                            continue
-                        full_text += data["delta"]
-                    elif data.get("type") == "tool_output":
-                        # Tool results — capture summary so we have SOMETHING even
-                        # if the model never produces a final text response
-                        tool_summary = data.get("stdout") or data.get("output") or data.get("result") or ""
-                        if isinstance(tool_summary, str) and tool_summary.strip():
-                            tool_results.append(f"[{data.get('tool', '?')}] {tool_summary[:500]}")
-                except (json.JSONDecodeError, KeyError):
-                    pass
+        async def _consume_stream():
+            nonlocal full_text
+            async for event_str in stream_agent_loop(
+                endpoint_url=endpoint_url,
+                model=model,
+                messages=messages,
+                max_rounds=_task_max_rounds,
+                session_id=session_id,
+                owner=task.owner,
+                headers=headers,
+                disabled_tools=disabled_tools,
+                relevant_tools=relevant_tools,
+                fallbacks=_task_fallbacks,
+                workload="background",
+            ):
+                if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
+                    try:
+                        data = json.loads(event_str[6:])
+                        # Capture text from all event types, not just delta
+                        if "delta" in data:
+                            if data.get("thinking"):
+                                continue
+                            full_text += data["delta"]
+                        elif data.get("type") == "tool_output":
+                            # Tool results — capture summary so we have SOMETHING even
+                            # if the model never produces a final text response
+                            tool_summary = data.get("stdout") or data.get("output") or data.get("result") or ""
+                            if isinstance(tool_summary, str) and tool_summary.strip():
+                                tool_results.append(f"[{data.get('tool', '?')}] {tool_summary[:500]}")
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+        # Wall-clock cap on the whole agent loop. Task execution holds the
+        # single serial slot (Semaphore(1)); without a ceiling, one wedged or
+        # slow stream — a half-open connection that trickles bytes under the
+        # per-read httpx timeout, or a long tool chain — holds that slot
+        # indefinitely and every later task queues behind it forever (the
+        # scheduler keeps ticking but nothing ever runs). On timeout we cancel
+        # the stream, keep whatever partial text was collected, and return so
+        # the slot frees and the queue drains. 0 disables the cap.
+        from src.settings import get_setting
+        _budget = int(get_setting("task_agent_timeout_seconds", 900) or 0)
+        if _budget > 0:
+            try:
+                await asyncio.wait_for(_consume_stream(), timeout=_budget)
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "Task %s agent loop exceeded the %ss wall-clock budget "
+                    "(task_agent_timeout_seconds); cancelled the stream and "
+                    "released the execution slot.",
+                    getattr(task, "id", "?"), _budget,
+                )
+                _note = "[Task stopped: exceeded the configured time budget (task_agent_timeout_seconds).]"
+                full_text = (full_text.strip() + "\n\n" + _note) if full_text.strip() else _note
+        else:
+            await _consume_stream()
 
         # Grace summarization — if the model exhausted rounds on tool calls
         # without producing a final text response, do one last LLM call
@@ -2036,7 +2243,16 @@ class TaskScheduler:
         )
 
         started_ts = time.time()
-        report = await researcher.research(task.prompt)
+        # Pull any allowlisted URL the prompt names (even-odysseus pull model)
+        # and prepend it as grounding — the research pipeline has no tool loop,
+        # so this is the only way it can obey a "GET <url> for grounding" task.
+        grounding = await _fetch_grounding_context(task.prompt or "")
+        research_input = (
+            grounding + "\n\n---\n\n" + (task.prompt or "")
+            if grounding
+            else task.prompt
+        )
+        report = await researcher.research(research_input)
         completed_ts = time.time()
         try:
             stats = researcher.get_stats() or {}
