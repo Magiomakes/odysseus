@@ -341,7 +341,11 @@ class TaskScheduler:
         # event bus fires from background tasks. Without this lock long-running
         # tasks could be double-dispatched.
         self._executing_lock = asyncio.Lock()
-        self._pending_notifications = []  # completed task notifications
+        # Completed-task notifications. Backed by a JSON file under DATA_DIR
+        # so undelivered results survive a server restart — previously they
+        # lived only in this list and a restart silently discarded every
+        # result the user hadn't had the app open to receive.
+        self._pending_notifications = self._load_notifications()
         self._task_defer_counts = {}
         # Strict serial execution — exactly one task runs at a time. Anything
         # else (manual trigger, scheduled dispatch, task chain) waits behind
@@ -397,6 +401,33 @@ class TaskScheduler:
             logger.debug("Task abort marker failed for %s", task_id, exc_info=True)
             return False
 
+    @staticmethod
+    def _notifications_file() -> str:
+        from src.constants import DATA_DIR
+        return os.path.join(DATA_DIR, "task_notifications.json")
+
+    def _load_notifications(self) -> list:
+        """Restore undelivered notifications persisted by a previous run."""
+        try:
+            with open(self._notifications_file(), encoding="utf-8") as f:
+                notes = json.load(f)
+            if isinstance(notes, list):
+                return [n for n in notes if isinstance(n, dict)][-50:]
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Could not restore pending task notifications", exc_info=True)
+        return []
+
+    def _save_notifications(self):
+        try:
+            tmp = self._notifications_file() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._pending_notifications, f, ensure_ascii=False)
+            os.replace(tmp, self._notifications_file())
+        except Exception:
+            logger.warning("Could not persist pending task notifications", exc_info=True)
+
     def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None):
         """Store a notification about a completed task run. Tagged with the
         task's owner so `pop_notifications` can return only that user's
@@ -414,6 +445,7 @@ class TaskScheduler:
         # Cap at 50 to avoid unbounded growth
         if len(self._pending_notifications) > 50:
             self._pending_notifications = self._pending_notifications[-50:]
+        self._save_notifications()
 
     def pop_notifications(self, owner: str = None) -> list:
         """Return and clear pending notifications.
@@ -427,6 +459,7 @@ class TaskScheduler:
         if owner is None:
             notes = self._pending_notifications[:]
             self._pending_notifications.clear()
+            self._save_notifications()
             return notes
         # Strict owner scope — used to OR-in null-owner notifications for
         # "legacy single-user" compat but that leaked notification bodies to
@@ -438,6 +471,8 @@ class TaskScheduler:
             else:
                 keep.append(n)
         self._pending_notifications = keep
+        if take:
+            self._save_notifications()
         return take
 
     async def start(self):
@@ -1680,6 +1715,27 @@ class TaskScheduler:
             and (getattr(task, "action", "") or "") in self._SILENT_ACTIONS
         ):
             return
+
+        # email_results side-channel: the column has existed in the schema
+        # (and defaulted on) since task creation, but no code ever read it —
+        # results targeted at 'notification' only lived in the in-process
+        # queue and died with the server. When set on an llm/research task,
+        # email a copy through the account SMTP so results reach the user
+        # even when the app is closed. Restricted to llm/research so
+        # event-triggered housekeeping actions can't spam the inbox; skipped
+        # when the output target is itself an email address (double-send).
+        if (
+            getattr(task, "email_results", None)
+            and (getattr(task, "task_type", "") or "llm") in ("llm", "research")
+            and not self._is_email_output_target(output)
+        ):
+            try:
+                await self._deliver_via_email("email", task, result)
+            except Exception:
+                logger.warning(
+                    "email_results copy failed for task %s", task.id, exc_info=True
+                )
+
         if output.startswith("mcp__"):
             await self._deliver_via_mcp(output, task, result)
             return
