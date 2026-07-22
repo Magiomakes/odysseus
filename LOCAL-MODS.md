@@ -41,6 +41,7 @@ onto new upstream is either clean or a tiny obvious conflict in one file.
 | `fix/web-fetch-private-ip-guard` | SSRF guard on the generic `web_fetch` tool: refuses targets that are, or resolve to, loopback/private/link-local space unless the hostname is on `WEB_FETCH_ALLOWLIST` (same env + semantics as the grounding pre-fetch, so the allowlist constrains everything its name implies). Task-agent prompts are untrusted input (voice transcripts, API-created tasks) — without this, an injected instruction could read any service on the machine/LAN. Added 2026-07-02 (even-odysseus VISION.md Phase 0). | `src/net_guard.py` (new), `src/agent_tools/web_tools.py`, `tests/test_web_fetch_guard.py` |
 | `fix/task-result-delivery` | Task results reach the user even when the app is closed. (1) `output_target='notification'` results were queued only in RAM and wiped by any restart — now persisted to `DATA_DIR/task_notifications.json` and restored on startup. (2) The `email_results` column existed in the schema (and defaulted on) but no code ever read it — now honored for llm/research tasks via the existing SMTP delivery path (housekeeping actions excluded to avoid inbox spam; skipped when output target is already email). Added 2026-07-22. Candidate to upstream. | `src/task_scheduler.py` |
 | `fix/memory-mcp-owner` | Built-in memory MCP server launches with `ODYSSEUS_MCP_MEMORY_OWNER` resolved (explicit env wins; single-user installs scope to the sole `auth.json` account). The MCP stdio client *replaces* the child env, so the owner never reached the server before — against an owner-scoped store every `manage_memory` call (agent saves, even-odysseus bridge sessions) silently failed with a scope error. Added 2026-07-22. Candidate to upstream. | `src/builtin_mcp.py` |
+| `feat/task-board` | **My Tasks board** — Sunsama-style personal task planner (backlog + rolling week day columns, board-as-home). New `user_tasks` table + `/api/board/*` (self-contained in `routes/board_routes.py`): manual cards, webhook ingest for the even-odysseus Task Manager sink (idempotent), drag-to-agent handoff creating linked run-now scheduled tasks, pull-style result reconciliation flipping cards to `in_review`. UI injects itself (`static/js/board.js` + `static/board.css`); index.html hook is one script tag. Added 2026-07-22. | `routes/board_routes.py` (new), `static/js/board.js` (new), `static/board.css` (new), `tests/test_board_routes.py` (new), `app.py`, `static/index.html` |
 | `meta/local-mods-guide` | This document. | `LOCAL-MODS.md` |
 
 ### Dropped because upstream absorbed them
@@ -81,7 +82,7 @@ git merge --ff-only origin/main
 
 # 3. Re-seat each mod onto the new base, one at a time.
 #    Each is a single commit, so a conflict (if any) is small and local.
-for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide; do
+for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board meta/local-mods-guide; do
   echo "==> rebasing $b"
   git checkout "$b" && git rebase main || {
     echo "CONFLICT in $b — resolve the file, 'git add' it, then 'git rebase --continue'."
@@ -92,11 +93,11 @@ done
 
 # 4. Rebuild the integration branch = main + all mods, and run from it.
 git checkout -B integration main
-git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide
+git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board meta/local-mods-guide
 
 # 5. (optional) push the re-seated branches to your fork
 git push --force-with-lease fork \
-  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide
+  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board meta/local-mods-guide
 ```
 
 ### If a rebase hits a conflict
