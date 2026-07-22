@@ -39,6 +39,8 @@ onto new upstream is either clean or a tiny obvious conflict in one file.
 | `fix/task-agent-wall-clock-timeout` | Hard wall-clock cap (`task_agent_timeout_seconds`, default 900s) on a scheduled task's agent loop. Task execution holds the single `Semaphore(1)` slot, so one wedged/slow stream would otherwise park it forever and stall the whole queue ("no task fired in weeks"). On expiry the stream is cancelled, partial output kept, slot released. Upstream PR #4827 — candidate to upstream then drop. | `src/task_scheduler.py`, `src/settings.py` |
 | `feat/task-grounding-url-fetch` | Scheduled task agents can pull grounding from a URL named in the prompt (even-odysseus "pull, not push" / ADR-0007). Research tasks (no tool loop) pre-fetch any **allowlisted** URL and prepend it as grounding context; llm tasks get `web_fetch` promoted to always-available. Gated by env `WEB_FETCH_ALLOWLIST` (comma-separated hostnames; empty = off) so an autonomous task can't be steered into an SSRF fetch. *(Amended 2026-07-02: redirect hops re-pass the allowlist — `follow_redirects=False` + manual hop loop.)* **Requires `WEB_FETCH_ALLOWLIST=<even-odysseus host>` in `.env`.** | `src/task_scheduler.py`, `src/tool_index.py`, `tests/test_task_grounding_fetch.py` |
 | `fix/web-fetch-private-ip-guard` | SSRF guard on the generic `web_fetch` tool: refuses targets that are, or resolve to, loopback/private/link-local space unless the hostname is on `WEB_FETCH_ALLOWLIST` (same env + semantics as the grounding pre-fetch, so the allowlist constrains everything its name implies). Task-agent prompts are untrusted input (voice transcripts, API-created tasks) — without this, an injected instruction could read any service on the machine/LAN. Added 2026-07-02 (even-odysseus VISION.md Phase 0). | `src/net_guard.py` (new), `src/agent_tools/web_tools.py`, `tests/test_web_fetch_guard.py` |
+| `fix/task-result-delivery` | Task results reach the user even when the app is closed. (1) `output_target='notification'` results were queued only in RAM and wiped by any restart — now persisted to `DATA_DIR/task_notifications.json` and restored on startup. (2) The `email_results` column existed in the schema (and defaulted on) but no code ever read it — now honored for llm/research tasks via the existing SMTP delivery path (housekeeping actions excluded to avoid inbox spam; skipped when output target is already email). Added 2026-07-22. Candidate to upstream. | `src/task_scheduler.py` |
+| `fix/memory-mcp-owner` | Built-in memory MCP server launches with `ODYSSEUS_MCP_MEMORY_OWNER` resolved (explicit env wins; single-user installs scope to the sole `auth.json` account). The MCP stdio client *replaces* the child env, so the owner never reached the server before — against an owner-scoped store every `manage_memory` call (agent saves, even-odysseus bridge sessions) silently failed with a scope error. Added 2026-07-22. Candidate to upstream. | `src/builtin_mcp.py` |
 | `meta/local-mods-guide` | This document. | `LOCAL-MODS.md` |
 
 ### Dropped because upstream absorbed them
@@ -79,7 +81,7 @@ git merge --ff-only origin/main
 
 # 3. Re-seat each mod onto the new base, one at a time.
 #    Each is a single commit, so a conflict (if any) is small and local.
-for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard meta/local-mods-guide; do
+for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide; do
   echo "==> rebasing $b"
   git checkout "$b" && git rebase main || {
     echo "CONFLICT in $b — resolve the file, 'git add' it, then 'git rebase --continue'."
@@ -90,11 +92,11 @@ done
 
 # 4. Rebuild the integration branch = main + all mods, and run from it.
 git checkout -B integration main
-git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard meta/local-mods-guide
+git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide
 
 # 5. (optional) push the re-seated branches to your fork
 git push --force-with-lease fork \
-  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard meta/local-mods-guide
+  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner meta/local-mods-guide
 ```
 
 ### If a rebase hits a conflict
