@@ -758,6 +758,10 @@ set_task_scheduler(task_scheduler)
 from routes.task_routes import setup_task_routes
 app.include_router(setup_task_routes(task_scheduler))
 
+# My Tasks board (personal task cards; agent handoff + bridge ingest)
+from routes.board_routes import setup_board_routes
+app.include_router(setup_board_routes(task_scheduler))
+
 from routes.assistant_routes import setup_assistant_routes
 app.include_router(setup_assistant_routes(task_scheduler))
 
