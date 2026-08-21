@@ -763,6 +763,10 @@ set_task_scheduler(task_scheduler)
 from routes.task_routes import setup_task_routes
 app.include_router(setup_task_routes(task_scheduler))
 
+# Captures pane (even-odysseus bridge: capture-review inbox + sessions browser)
+from routes.bridge_routes import setup_bridge_routes
+app.include_router(setup_bridge_routes())
+
 from routes.assistant_routes import setup_assistant_routes
 app.include_router(setup_assistant_routes(task_scheduler))
 
