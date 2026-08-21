@@ -1,0 +1,176 @@
+"""
+bridge_routes.py — thin read/act proxy to the even-odysseus brain service.
+
+The capture pipeline (glasses → ingest → whisper → extraction) lives in a
+separate local service (the "brain", default http://127.0.0.1:8765) and owns
+ALL of its data: session folders on disk, the review queue in the Self-Model
+DB. This module makes those two surfaces usable INSIDE Odysseus — a "Captures"
+pane with the pending review inbox (confirm / dismiss / reclassify) and a
+sessions browser (record + transcript + audio) — WITHOUT copying any state:
+every route is a proxy, so the brain stays the single source of truth and the
+phone plugin, the daily report, and this pane can never disagree.
+
+Modularity contract (LOCAL-MODS.md): self-contained in this file + the
+self-injecting static/js/bridge.js UI; app.py's only hook is one include_router
+line, index.html's one script tag. Delete all three and Odysseus is stock.
+
+Config (.env / environment; unset = the pane hides itself):
+    BRIDGE_BASE_URL   brain service origin (default http://127.0.0.1:8765)
+    BRIDGE_TOKEN      the brain's INGEST_TOKEN (server-to-server auth). The
+                      browser never sees this token — that is the point of
+                      proxying instead of calling the brain from the page.
+
+Mutation surface: POST /review/resolve + /review/classify mirror the brain's
+own contract (confirm routes a capture through the brain's bucket router —
+manual → the My Tasks board via the brain's webhook sink, automatable → an
+Odysseus agent-task; the human confirm stays the single gate, ADR-0011).
+Exposure parity with board_routes: requests ride Odysseus's own page auth.
+"""
+
+import logging
+import os
+import re
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger(__name__)
+
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
+
+# Timeouts per call class: reads are quick; classify runs a local LLM over up
+# to 10 cards and legitimately takes minutes on a cold model.
+_T_READ = 15.0
+_T_RESOLVE = 60.0
+_T_CLASSIFY = 300.0
+_T_AUDIO = 120.0
+
+
+def _base() -> str:
+    return (os.environ.get("BRIDGE_BASE_URL") or "http://127.0.0.1:8765").rstrip("/")
+
+
+def _token() -> str:
+    return os.environ.get("BRIDGE_TOKEN", "")
+
+
+def _configured() -> bool:
+    return bool(_token())
+
+
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {_token()}"}
+
+
+async def _brain(method: str, path: str, *, json_body=None,
+                 timeout: float = _T_READ) -> dict:
+    """One JSON round-trip to the brain service. Raises HTTPException with the
+    brain's status on a non-2xx so the UI sees real errors, and 502/504 when
+    the brain is down/slow. Seam for tests (monkeypatch this)."""
+    if not _configured():
+        raise HTTPException(503, "bridge not configured (set BRIDGE_TOKEN)")
+    url = _base() + path
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, url, json=json_body,
+                                        headers=_headers())
+    except httpx.TimeoutException:
+        raise HTTPException(504, f"brain timed out on {path}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"brain unreachable ({e.__class__.__name__})")
+    if resp.status_code >= 400:
+        detail = resp.text[:300]
+        try:
+            detail = resp.json().get("error", detail)
+        except Exception:
+            pass
+        raise HTTPException(resp.status_code, detail)
+    try:
+        return resp.json()
+    except Exception:
+        raise HTTPException(502, f"brain returned non-JSON for {path}")
+
+
+def setup_bridge_routes() -> APIRouter:
+    router = APIRouter(prefix="/api/bridge", tags=["bridge"])
+
+    @router.get("/status")
+    async def status(request: Request):
+        """Config + liveness in one probe; the UI hides the pane when the
+        bridge is unconfigured and shows a 'brain offline' state when down."""
+        if not _configured():
+            return {"configured": False, "ok": False}
+        try:
+            health = await _brain("GET", "/health")
+        except HTTPException:
+            return {"configured": True, "ok": False}
+        return {"configured": True, "ok": bool(health.get("ok")),
+                "brain_version": health.get("version")}
+
+    @router.get("/review")
+    async def review_list(request: Request):
+        return await _brain("GET", "/api/self/review")
+
+    @router.post("/review/classify")
+    async def review_classify(request: Request):
+        return await _brain("POST", "/api/self/review/classify", json_body={},
+                            timeout=_T_CLASSIFY)
+
+    @router.post("/review/resolve")
+    async def review_resolve(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON body")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be an object")
+        allowed = {k: body[k] for k in ("index", "disposition", "bucket")
+                   if k in body}
+        if "index" not in allowed or "disposition" not in allowed:
+            raise HTTPException(400, "index and disposition are required")
+        return await _brain("POST", "/api/self/review/resolve",
+                            json_body=allowed, timeout=_T_RESOLVE)
+
+    @router.get("/sessions")
+    async def sessions(request: Request):
+        return await _brain("GET", "/api/sessions")
+
+    @router.get("/sessions/{session_id}")
+    async def session_detail(request: Request, session_id: str):
+        if not _SESSION_ID.match(session_id):
+            raise HTTPException(400, "bad session id")
+        return await _brain("GET", f"/api/sessions/{session_id}")
+
+    @router.get("/sessions/{session_id}/audio")
+    async def session_audio(request: Request, session_id: str):
+        """Stream the session's wav through so the pane's <audio> element works
+        without exposing the brain token to the page."""
+        if not _SESSION_ID.match(session_id):
+            raise HTTPException(400, "bad session id")
+        if not _configured():
+            raise HTTPException(503, "bridge not configured")
+        url = f"{_base()}/api/sessions/{session_id}/audio.wav"
+        client = httpx.AsyncClient(timeout=_T_AUDIO)
+        try:
+            req = client.build_request("GET", url, headers=_headers())
+            upstream = await client.send(req, stream=True)
+        except httpx.HTTPError as e:
+            await client.aclose()
+            raise HTTPException(502, f"brain unreachable ({e.__class__.__name__})")
+        if upstream.status_code >= 400:
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(upstream.status_code, "audio unavailable")
+
+        async def _gen():
+            try:
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(_gen(), media_type="audio/wav")
+
+    return router
