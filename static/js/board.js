@@ -60,6 +60,26 @@ let _dragId = null;
 let _pollTimer = null;
 let _detailCardId = null;
 
+// Capture Inbox (ADR-0015): pending capture decisions moved here from the
+// old Captures pane. Fed by the bridge mod's /api/bridge/review proxies —
+// soft dependency: bridge absent/unconfigured → the section never renders.
+let _inbox = [];
+let _bridgeOk = null;   // null = not probed yet, then true/false
+let _classifyInFlight = false;
+
+const INBOX_BUCKETS = [
+  { name: 'research', label: 'research' },
+  { name: 'email-draft', label: 'email draft' },
+  { name: 'manual', label: 'my list' },
+];
+const INBOX_REASONS = {
+  uncertain_owner: 'whose task?',
+  low_confidence: 'unsure',
+  owned_unconfirmed: 'heard you own this',
+  verifier_ungrounded: 'not grounded',
+  verifier_unavailable: 'unverified',
+};
+
 /* ── date + format helpers (all local-time) ── */
 
 function _fmt(d) {
@@ -126,6 +146,28 @@ async function _load() {
   _tasks = data.tasks || [];
 }
 
+async function _loadInbox() {
+  if (_bridgeOk === null) {
+    try {
+      const s = await _api('GET', '/api/bridge/status');
+      _bridgeOk = !!(s.configured && s.ok);
+    } catch { _bridgeOk = false; }
+  }
+  if (!_bridgeOk) { _inbox = []; return; }
+  try {
+    const data = await _api('GET', '/api/bridge/review');
+    _inbox = data.review || [];
+  } catch { _inbox = []; }
+  // Backfill missing bucket proposals (slow, model-backed) after paint.
+  if (_inbox.some(l => !l.bucket) && !_classifyInFlight) {
+    _classifyInFlight = true;
+    _api('POST', '/api/bridge/review/classify', {}).then(data => {
+      if (data && data.review) { _inbox = data.review; _render(); }
+    }).catch(() => { /* chips stay unclassified */ })
+      .finally(() => { _classifyInFlight = false; });
+  }
+}
+
 async function _loadModels() {
   try {
     const data = await _api('GET', '/api/models');
@@ -172,12 +214,14 @@ function _esc(s) {
 
 function _cardEl(t) {
   const el = document.createElement('div');
-  el.className = `board-card status-${t.status}`;
+  const fromCapture = t.source && t.source !== 'manual';
+  el.className = `board-card status-${t.status}${fromCapture ? ' capture' : ''}`;
   el.draggable = t.status !== 'handed_off';
   el.tabIndex = 0;
   el.dataset.id = t.id;
   const overdue = t.due && t.due < _today() && t.status !== 'done';
   const meta = [];
+  if (fromCapture) meta.push('<span class="board-card-capture">capture</span>');
   if (t.channel) {
     meta.push(`<span class="board-card-channel" style="color:${_channelColor(t.channel)}">#${_esc(t.channel)}</span>`);
   }
@@ -192,6 +236,23 @@ function _cardEl(t) {
       ${est ? `<span class="board-card-est">${est}</span>` : ''}
     </div>
     ${meta.length ? `<div class="board-card-meta">${meta.join('')}</div>` : ''}`;
+  // Auto-landed capture todos are dismissable in one hover-click (delete =
+  // dismiss, ADR-0015) — the decision the old review inbox used to gate.
+  if (fromCapture && t.status === 'todo') {
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'board-card-dismiss';
+    x.title = 'Dismiss (delete this captured task)';
+    x.textContent = '✕';
+    x.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await _api('DELETE', `/api/board/tasks/${t.id}`);
+        await _refresh();
+      } catch (err) { showToast(`Dismiss failed: ${err.message}`); }
+    });
+    el.appendChild(x);
+  }
   el.addEventListener('click', () => _openDetail(t.id));
   el.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openDetail(t.id); }
@@ -438,6 +499,89 @@ function _openQuickAdd(wrap, btn, opts) {
   input.addEventListener('blur', done);
 }
 
+/* ── capture inbox (ADR-0015: the agent-execution confirm gate) ──
+   Manual captures auto-land scheduled; what needs a human here is the
+   agent buckets (research / email-draft) — confirming fires a real agent
+   through the brain's router, which delivers back onto this board as a
+   linked, auto-handed-off card. */
+
+function _inboxCardEl(line) {
+  const card = document.createElement('div');
+  card.className = 'board-inbox-card';
+  const reason = INBOX_REASONS[line.reason] || line.reason;
+  const when = line.created_at ? line.created_at.slice(0, 10) : '';
+  card.innerHTML = `
+    <div class="board-inbox-text">${_esc(line.text)}</div>
+    <div class="board-inbox-meta">${_esc(line.kind)} · ${_esc(reason)}${when ? ` · ${when}` : ''}</div>
+    <div class="board-inbox-buckets"></div>
+    <div class="board-inbox-actions">
+      <button class="bi-confirm" type="button">confirm</button>
+      <button class="bi-dismiss" type="button">dismiss</button>
+    </div>`;
+  const bucketsEl = card.querySelector('.board-inbox-buckets');
+  let picked = line.bucket;
+  const paint = () => {
+    bucketsEl.innerHTML = '';
+    for (const b of INBOX_BUCKETS) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'board-inbox-bucket' + (picked === b.name ? ' picked' : '');
+      chip.textContent = picked === b.name ? `→ ${b.label}` : b.label;
+      chip.addEventListener('click', async () => {
+        try {
+          await _api('POST', '/api/bridge/review/resolve',
+            { index: line.queue_index, disposition: 'reclassify', bucket: b.name });
+          picked = b.name;
+          paint();
+        } catch (e) { showToast(`reclassify failed: ${e.message}`); }
+      });
+      bucketsEl.appendChild(chip);
+    }
+  };
+  paint();
+
+  const act = async (disposition) => {
+    card.querySelectorAll('button').forEach(b => (b.disabled = true));
+    try {
+      const body = { index: line.queue_index, disposition };
+      if (disposition === 'confirm' && picked) body.bucket = picked;
+      await _api('POST', '/api/bridge/review/resolve', body);
+    } catch (e) {
+      showToast(`${disposition} failed: ${e.message}`);
+      card.querySelectorAll('button').forEach(b => (b.disabled = false));
+      return;
+    }
+    _inbox = _inbox.filter(l => l.queue_index !== line.queue_index);
+    if (disposition === 'confirm') {
+      showToast(picked === 'manual' ? 'Confirmed → scheduled on the board'
+        : `Confirmed → ${picked || 'research'} agent`);
+      // The brain routes agent buckets back through /api/board/ingest with
+      // auto-handoff — refresh shortly so the new card shows in Agents.
+      setTimeout(_refresh, 1200);
+    } else {
+      _render();
+    }
+  };
+  card.querySelector('.bi-confirm').addEventListener('click', () => act('confirm'));
+  card.querySelector('.bi-dismiss').addEventListener('click', () => act('dismiss'));
+  return card;
+}
+
+function _inboxEl() {
+  const col = document.createElement('div');
+  col.className = 'board-inbox';
+  col.style.setProperty('--col-i', 0);
+  col.innerHTML = `
+    <div class="board-col-head">
+      <span class="board-col-label">Inbox</span>
+      <span class="board-col-count">${_inbox.length}</span>
+    </div>
+    <div class="board-inbox-list"></div>`;
+  const list = col.querySelector('.board-inbox-list');
+  _inbox.forEach(l => list.appendChild(_inboxCardEl(l)));
+  return col;
+}
+
 /* ── agents column (far left) ── */
 
 function _agentsColEl() {
@@ -650,6 +794,7 @@ function _render() {
 
   const body = document.createElement('div');
   body.className = 'board-body';
+  if (_inbox.length) body.appendChild(_inboxEl());
   if (_railOn(SHOW_AGENTS_KEY)) body.appendChild(_agentsColEl());
   if (_railOn(SHOW_BACKLOG_KEY)) body.appendChild(_backlogEl());
 
@@ -690,7 +835,7 @@ function _render() {
 
 async function _refresh() {
   try {
-    await _load();
+    await Promise.all([_load(), _loadInbox()]);
   } catch (err) {
     showToast(`Board load failed: ${err.message}`);
     return;
@@ -734,9 +879,13 @@ function _renderDetail(t) {
     `<option value="${h.key}"${(t.horizon || 'week') === h.key ? ' selected' : ''}>${h.label}</option>`).join('');
   const box = document.createElement('div');
   box.className = 'board-detail';
+  const canEditDraft = !!(t.result && t.scheduled_task_id);
   const resultBlock = t.result ? `
-    <span class="board-detail-result-label">Agent result${t.run_status === 'error' ? ' — <span class="run-error">run failed</span>' : ''}</span>
+    <span class="board-detail-result-label">Agent result${t.run_status === 'error' ? ' — <span class="run-error">run failed</span>' : ''}${canEditDraft ? ' <button type="button" class="bd-edit-draft">edit draft</button>' : ''}</span>
     <div class="board-detail-result">${_esc(t.result)}</div>` : '';
+  const sourceLink = t.session_id
+    ? `<button type="button" class="bd-session-link" title="Open the recording this task came from">source recording ↗</button>`
+    : '';
   box.innerHTML = `
     <input class="board-detail-title" value="${_esc(t.title)}" />
     <textarea class="board-detail-notes" placeholder="notes / context for you or the agent">${_esc(t.notes || '')}</textarea>
@@ -748,10 +897,70 @@ function _renderDetail(t) {
       <label>#</label><input type="text" class="bd-channel" placeholder="channel" value="${_esc(t.channel || '')}" style="width:110px">
       <label>est</label><input type="text" class="bd-est" placeholder="1:30" value="${_fmtEst(t.estimate_minutes)}" style="width:52px">
       <label>horizon</label><select class="bd-horizon">${horizonOpts}</select>
-      <span style="margin-left:auto">${_esc(t.status.replace('_', ' '))}${t.source !== 'manual' ? ` · ${_esc(t.source)}` : ''}</span>
+      ${sourceLink}
+      <span style="margin-left:auto">${_esc(t.status.replace('_', ' '))}${t.source !== 'manual' ? ` · ${_esc(t.source)}` : ''}${t.bucket ? ` · ${_esc(t.bucket)}` : ''}${t.draft_saved ? ' · in Drafts' : ''}</span>
     </div>
     ${resultBlock}
     <div class="board-detail-actions"></div>`;
+
+  // Provenance jump: open the Captures window on this card's recording
+  // (graceful no-op if the bridge mod is absent).
+  box.querySelector('.bd-session-link')?.addEventListener('click', () => {
+    if (window.odysseusCaptures?.openSession) {
+      _closeDetail();
+      window.odysseusCaptures.openSession(t.session_id);
+    } else {
+      showToast('Captures pane not available');
+    }
+  });
+
+  // Edit-draft (ADR-0015 learn-from-edit): PATCH saves the edit (the server
+  // preserves the pristine original once); then the edit is forwarded
+  // fire-and-forget to the brain so it can learn contact facts from the diff.
+  box.querySelector('.bd-edit-draft')?.addEventListener('click', () => {
+    const resultEl = box.querySelector('.board-detail-result');
+    if (!resultEl || box.querySelector('.bd-draft-editor')) return;
+    const editor = document.createElement('div');
+    editor.className = 'bd-draft-editor';
+    const ta = document.createElement('textarea');
+    ta.className = 'bd-draft-textarea';
+    ta.value = t.result || '';
+    const row = document.createElement('div');
+    row.className = 'board-detail-actions';
+    const save = document.createElement('button');
+    save.className = 'primary';
+    save.textContent = 'save edit';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'cancel';
+    row.append(save, cancel);
+    editor.append(ta, row);
+    resultEl.replaceWith(editor);
+    ta.focus();
+    cancel.addEventListener('click', () => _renderDetail(t));
+    save.addEventListener('click', async () => {
+      const edited = ta.value;
+      save.disabled = cancel.disabled = true;
+      try {
+        await _api('PATCH', `/api/board/tasks/${t.id}`, { result: edited });
+      } catch (err) {
+        showToast(`Save failed: ${err.message}`);
+        save.disabled = cancel.disabled = false;
+        return;
+      }
+      // Learning is best-effort — the edit is already saved.
+      _api('POST', '/api/bridge/draft-feedback', {
+        card_id: t.id,
+        title: t.title,
+        original: t.result_original || t.result || '',
+        edited,
+        session_id: t.session_id || '',
+      }).then(r => {
+        const n = (r && (r.applied || 0) + (r.created || 0)) || 0;
+        if (n) showToast(`Learned ${n} contact fact${n === 1 ? '' : 's'} from your edit`);
+      }).catch(() => { /* learning skipped; edit kept */ });
+      await _refresh();
+    });
+  });
 
   const actions = box.querySelector('.board-detail-actions');
   const btn = (label, cls, fn) => {

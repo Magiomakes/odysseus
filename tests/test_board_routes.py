@@ -326,3 +326,227 @@ def test_ingest_accepts_list_and_skips_garbage():
         assert bad_due is not None and bad_due.due is None
     finally:
         db.close()
+
+
+# ── ADR-0015: ingest v2 (pre-scheduled landing, provenance, auto-handoff) ──
+
+def test_ingest_v2_lands_prescheduled_with_provenance():
+    router, _ = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    payload = {"text": "Call the vet about Rex", "due": "2026-08-24",
+               "planned_date": "2026-08-24", "source": "even-odysseus",
+               "added_at": "2026-08-21T10:00:00Z", "bucket": "manual",
+               "session_id": "2026-08-21_0900_vet-chat",
+               "context_url": "http://brain/api/sessions/2026-08-21_0900_vet-chat"}
+    out = _run(ingest(_req("alice", body=payload)))
+    assert out["created"] == 1 and out["handed_off"] == 0
+
+    t = _run(listing(_req("alice")))["tasks"][0]
+    assert t["planned_date"] == "2026-08-24"        # on the day column
+    assert t["horizon"] == "week"                    # scheduled → no stored horizon
+    assert t["session_id"] == "2026-08-21_0900_vet-chat"
+    assert t["context_url"].endswith("vet-chat")
+    assert t["bucket"] == "manual"
+    assert t["source_ref"]                           # exposed for clients
+
+
+def test_ingest_v2_horizon_landing_and_lenient_degrade():
+    router, _ = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    body = [
+        {"text": "Plan the quarter offsite", "horizon": "quarter",
+         "source": "even-odysseus", "added_at": "2026-08-21T10:01:00Z"},
+        {"text": "Bad fields survive", "planned_date": "someday-ish",
+         "horizon": "eventually", "source": "even-odysseus",
+         "added_at": "2026-08-21T10:02:00Z"},
+    ]
+    out = _run(ingest(_req("alice", body=body)))
+    assert out["created"] == 2
+
+    tasks = {t["title"]: t for t in _run(listing(_req("alice")))["tasks"]}
+    assert tasks["Plan the quarter offsite"]["horizon"] == "quarter"
+    degraded = tasks["Bad fields survive"]
+    assert degraded["planned_date"] is None          # bad date dropped, card kept
+    assert degraded["horizon"] == "week"             # bad horizon dropped → default
+
+
+def test_ingest_v2_auto_handoff_creates_linked_task():
+    router, scheduler = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+
+    payload = {"text": "Research CRM options", "source": "even-odysseus",
+               "added_at": "2026-08-21T10:03:00Z", "bucket": "research",
+               "task_type": "research",
+               "prompt": "Produce a decision-ready brief.\n\nTask: Research CRM options"}
+    out = _run(ingest(_req("alice", body=payload)))
+    assert out["created"] == 1 and out["handed_off"] == 1
+    scheduler.run_task_now.assert_awaited_once()
+
+    db = _TS()
+    try:
+        card = db.query(UserTask).filter(UserTask.title == "Research CRM options").first()
+        assert card.status == "handed_off"
+        task = db.query(ScheduledTask).filter(ScheduledTask.id == card.scheduled_task_id).first()
+        assert task is not None and task.task_type == "research"
+        assert task.prompt.startswith("Produce a decision-ready brief.")
+        assert task.output_target == "none"
+    finally:
+        db.close()
+
+    # A retried (duplicate) delivery creates no card and fires NOTHING.
+    out2 = _run(ingest(_req("alice", body=payload)))
+    assert out2["created"] == 0 and out2["handed_off"] == 0
+    scheduler.run_task_now.assert_awaited_once()  # still just the first
+
+
+def test_ingest_v2_invalid_task_type_creates_inert_card():
+    router, scheduler = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    payload = {"text": "Weird task type", "task_type": "action",
+               "prompt": "Do it", "source": "even-odysseus",
+               "added_at": "2026-08-21T10:04:00Z"}
+    out = _run(ingest(_req("alice", body=payload)))
+    assert out["created"] == 1 and out["handed_off"] == 0
+    scheduler.run_task_now.assert_not_awaited()
+
+
+# ── ADR-0015: result edit preserves the pristine original exactly once ──
+
+def test_patch_result_sets_original_once():
+    router, _ = _router()
+    create = _endpoint(router, "POST", "/api/board/tasks")
+    patch = _endpoint(router, "PATCH", "/api/board/tasks/{card_id}")
+
+    card = _run(create(_req(), board_routes.CardCreate(title="Email Delaney")))
+    db = _TS()
+    try:
+        row = db.query(UserTask).filter(UserTask.id == card["id"]).first()
+        row.result = "Subject: Roof quote\n\nHi Delaney, ..."
+        db.commit()
+    finally:
+        db.close()
+
+    out = _run(patch(_req(), card["id"],
+                     board_routes.CardPatch(result="Subject: Roof quote\n\nHi Del, ...")))
+    assert out["result"].endswith("Hi Del, ...")
+    assert out["result_original"] == "Subject: Roof quote\n\nHi Delaney, ..."
+
+    out2 = _run(patch(_req(), card["id"],
+                      board_routes.CardPatch(result="Third version")))
+    assert out2["result"] == "Third version"
+    # the pristine agent draft is never overwritten by later edits
+    assert out2["result_original"] == "Subject: Roof quote\n\nHi Delaney, ..."
+
+
+def test_handoff_prompt_carries_context_url():
+    router, _ = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    handoff = _endpoint(router, "POST", "/api/board/tasks/{card_id}/handoff")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    _run(ingest(_req("alice", body={
+        "text": "Summarize the roof discussion", "source": "even-odysseus",
+        "added_at": "2026-08-21T10:05:00Z",
+        "context_url": "http://brain/api/sessions/2026-08-21_0900?token=r"})))
+    card = _run(listing(_req("alice")))["tasks"][0]
+    out = _run(handoff(_req("alice"), card["id"], board_routes.HandoffRequest()))
+
+    db = _TS()
+    try:
+        task = db.query(ScheduledTask).filter(
+            ScheduledTask.id == out["scheduled_task_id"]).first()
+        assert "GET http://brain/api/sessions/2026-08-21_0900?token=r" in task.prompt
+        assert "do not invent details" in task.prompt
+    finally:
+        db.close()
+
+
+# ── ADR-0015: completed email-draft results copied to IMAP Drafts once ──
+
+def test_reconcile_queues_email_draft_save(monkeypatch):
+    queued = []
+    monkeypatch.setattr(board_routes, "_queue_draft_save", lambda cid: queued.append(cid))
+    router, _ = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    _run(ingest(_req("alice", body={
+        "text": "Email Delaney about the quote", "source": "even-odysseus",
+        "added_at": "2026-08-21T10:06:00Z", "bucket": "email-draft",
+        "task_type": "llm", "prompt": "Write ONLY the message."})))
+    db = _TS()
+    try:
+        card = db.query(UserTask).first()
+        from datetime import datetime
+        db.add(TaskRun(id="run-d1", task_id=card.scheduled_task_id,
+                       started_at=datetime(2026, 8, 21, 12, 0),
+                       finished_at=datetime(2026, 8, 21, 12, 3),
+                       status="success",
+                       result="To: delaney@x.com\nSubject: Quote\n\nHi Delaney,"))
+        db.commit()
+        card_id = card.id
+    finally:
+        db.close()
+
+    _run(listing(_req("alice")))
+    assert queued == [card_id]
+    # A second read re-queues (still unsaved) — the worker's in-flight set and
+    # the draft_saved flag are what stop double appends, not the sweep.
+    _run(listing(_req("alice")))
+    assert queued == [card_id, card_id]
+
+
+def test_draft_save_worker_marks_once_and_retries_on_failure(monkeypatch):
+    router, _ = _router()
+    ingest = _endpoint(router, "POST", "/api/board/ingest")
+    _run(ingest(_req("alice", body={
+        "text": "Email Sam", "source": "even-odysseus",
+        "added_at": "2026-08-21T10:07:00Z", "bucket": "email-draft"})))
+    db = _TS()
+    try:
+        card = db.query(UserTask).first()
+        card.result = "Subject: Hello\n\nHi Sam,"
+        card.status = "in_review"
+        card.run_status = "success"
+        db.commit()
+        card_id = card.id
+    finally:
+        db.close()
+
+    calls = []
+    monkeypatch.setattr(board_routes, "_save_email_draft",
+                        lambda c: (calls.append(c.id), False)[1])
+    board_routes._draft_saves_inflight.add(card_id)
+    board_routes._draft_save_worker(card_id)     # failure → not marked
+    db = _TS()
+    try:
+        assert not db.query(UserTask).filter(UserTask.id == card_id).first().draft_saved
+    finally:
+        db.close()
+
+    monkeypatch.setattr(board_routes, "_save_email_draft",
+                        lambda c: (calls.append(c.id), True)[1])
+    board_routes._draft_saves_inflight.add(card_id)
+    board_routes._draft_save_worker(card_id)     # success → marked once
+    board_routes._draft_saves_inflight.add(card_id)
+    board_routes._draft_save_worker(card_id)     # already saved → no new attempt
+    db = _TS()
+    try:
+        assert db.query(UserTask).filter(UserTask.id == card_id).first().draft_saved
+    finally:
+        db.close()
+    assert calls == [card_id, card_id]
+
+
+def test_parse_draft_headers_and_fallbacks():
+    to, subj, body = board_routes._parse_draft(
+        "To: delaney@x.com\nSubject: The quote\n\nHi Delaney,\nHere it is.", "Card title")
+    assert to == "delaney@x.com" and subj == "The quote"
+    assert body.startswith("Hi Delaney,")
+
+    to2, subj2, body2 = board_routes._parse_draft("Just a bare body.", "Card title")
+    assert to2 is None and subj2 == "Card title" and body2 == "Just a bare body."
