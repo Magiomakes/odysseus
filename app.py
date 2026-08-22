@@ -854,6 +854,11 @@ app.include_router(setup_vault_routes())
 from routes.contacts.contacts_routes import setup_contacts_routes
 app.include_router(setup_contacts_routes())
 
+# Local mod feat/contact-notes (LOCAL-MODS.md): contact context notes +
+# a bearer-token-reachable contacts surface for the even-odysseus brain.
+from routes.contacts.contact_notes_routes import setup_contact_notes_routes
+app.include_router(setup_contact_notes_routes())
+
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
 
