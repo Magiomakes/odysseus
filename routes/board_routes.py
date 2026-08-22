@@ -22,6 +22,8 @@ act only.
 
 import json
 import logging
+import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -61,6 +63,11 @@ class UserTask(Base):
     channel           = Column(String, nullable=True)              # free-form #channel tag
     horizon           = Column(String, nullable=True)              # backlog horizon (VALID_HORIZONS)
     estimate_minutes  = Column(Integer, nullable=True)             # planned effort
+    session_id        = Column(String, nullable=True, index=True)  # source recording (even-odysseus Session Folder basename)
+    context_url       = Column(String, nullable=True)              # reachable pull URL for grounding (brain read API)
+    bucket            = Column(String, nullable=True)              # even-odysseus Agent Bucket (research | email-draft | manual)
+    result_original   = Column(Text, nullable=True)                # pristine agent output before any human edit
+    draft_saved       = Column(Integer, default=0)                 # email-draft copied to IMAP Drafts exactly once
     created_at        = Column(DateTime, default=lambda: datetime.utcnow())
     completed_at      = Column(DateTime, nullable=True)
 
@@ -73,6 +80,11 @@ def _ensure_columns():
         "channel": "VARCHAR",
         "horizon": "VARCHAR",
         "estimate_minutes": "INTEGER",
+        "session_id": "VARCHAR",
+        "context_url": "VARCHAR",
+        "bucket": "VARCHAR",
+        "result_original": "TEXT",
+        "draft_saved": "INTEGER",
     }
     try:
         with engine.connect() as conn:
@@ -107,6 +119,12 @@ def _card_to_dict(t: UserTask) -> dict:
         "channel": t.channel,
         "horizon": t.horizon or "week",
         "estimate_minutes": t.estimate_minutes,
+        "session_id": t.session_id,
+        "source_ref": t.source_ref,
+        "context_url": t.context_url,
+        "bucket": t.bucket,
+        "result_original": t.result_original,
+        "draft_saved": bool(t.draft_saved),
         "created_at": t.created_at.isoformat() + "Z" if t.created_at else None,
         "completed_at": t.completed_at.isoformat() + "Z" if t.completed_at else None,
     }
@@ -165,6 +183,7 @@ class CardPatch(BaseModel):
     channel: Optional[str] = None        # "" clears
     horizon: Optional[str] = None
     estimate_minutes: Optional[int] = None  # 0 clears
+    result: Optional[str] = None         # human edit of the agent output (ADR-0015)
     # Explicit flags because None is a meaningful value for these two fields
     clear_planned_date: Optional[bool] = False
     clear_due: Optional[bool] = False
@@ -181,9 +200,155 @@ class IngestItem(BaseModel):
     due: Optional[str] = None
     source: Optional[str] = "bridge"
     added_at: Optional[str] = None
+    # ADR-0015 v2 fields — all optional so v1 sinks keep working unchanged.
+    session_id: Optional[str] = None    # source recording (Session Folder basename)
+    context_url: Optional[str] = None   # reachable pull URL for grounding
+    planned_date: Optional[str] = None  # land pre-scheduled on this day column
+    horizon: Optional[str] = None       # else this backlog horizon
+    bucket: Optional[str] = None        # Agent Bucket label (display / draft routing)
+    task_type: Optional[str] = None     # "llm" | "research" → auto-handoff
+    prompt: Optional[str] = None        # full grounded agent prompt (built by the brain)
 
 
 MAX_ABORT_RETRIES = 3
+
+
+def _create_handoff_task(db, card, prompt, task_type, model=None):
+    """The single card→agent handoff seam (drag-to-agent AND ingest
+    auto-handoff): create the run-now ScheduledTask, link it to the card,
+    flip the card to 'handed_off'. Caller commits and then fires
+    task_scheduler.run_task_now(task.id)."""
+    task = ScheduledTask(
+        id=str(uuid.uuid4()),
+        owner=card.owner,
+        name=f"[Board] {card.title[:80]}",
+        prompt=prompt,
+        task_type=task_type,
+        trigger_type="schedule",
+        schedule="once",
+        next_run=None,          # fired immediately by the caller, not the loop
+        status="active",
+        output_target="none",   # the board card is the delivery surface
+        model=model,
+        run_count=0,
+        email_results=False,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    db.add(task)
+    card.scheduled_task_id = task.id
+    card.status = "handed_off"
+    card.run_status = None
+    card.result = None
+    return task
+
+
+_CONTEXT_URL_BLOCK = (
+    "\n\nThis task came from a recorded conversation. Pull it for grounding "
+    "before you act:\n  GET {url}\nGround every specific in that context or a "
+    "cited source; do not invent details."
+)
+
+
+# ── email-draft → stock IMAP Drafts folder (ADR-0015) ──────────────────────
+# A completed email-draft card's result is copied once into the owner's
+# Drafts folder so it's findable in the stock email tab — not only in a
+# pop-once notification / the Activity log. Saves run on a daemon thread
+# (IMAP is slow and this is called from the board-read reconcile path);
+# `draft_saved` flips only on success, so failures retry on later reads.
+
+_DRAFT_HEADER_RE = re.compile(r"^(To|Subject):\s*(.+)$", re.IGNORECASE)
+_draft_saves_inflight: set = set()
+_draft_saves_lock = threading.Lock()
+
+
+def _parse_draft(text: str, fallback_subject: str):
+    """Split an agent-written draft into (to, subject, body). The email-draft
+    bucket instruction asks for 'Subject + body only', so leading To:/Subject:
+    header lines are recognized; anything else is body. Missing subject falls
+    back to the card title."""
+    lines = (text or "").splitlines()
+    to = subject = None
+    body_start = 0
+    for i, line in enumerate(lines[:4]):
+        m = _DRAFT_HEADER_RE.match(line.strip())
+        if not m:
+            if not line.strip() and (to or subject):
+                body_start = i + 1
+            break
+        if m.group(1).lower() == "to":
+            to = m.group(2).strip()
+        else:
+            subject = m.group(2).strip()
+        body_start = i + 1
+    body = "\n".join(lines[body_start:]).strip() or (text or "")
+    return to, (subject or fallback_subject), body
+
+
+def _save_email_draft(card) -> bool:
+    """IMAP-append the card's draft to the owner's Drafts folder, stamped
+    X-Odysseus-Kind/Ref for task linkage. Mirrors POST /api/email/draft's
+    mechanics via the module-level email helpers (NOT the route — its
+    require_owner would resolve a server-side call to the 'api' pseudo-user).
+    Best-effort: any failure returns False and the reconcile retries later."""
+    try:
+        import email.utils as email_utils
+        from email.mime.text import MIMEText
+
+        from routes.email_helpers import (_detect_drafts_folder,
+                                          _get_email_config, _imap)
+        cfg = _get_email_config(owner=card.owner or "")
+        to, subject, body = _parse_draft(card.result or "", card.title or "Draft")
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["From"] = email_utils.formataddr(
+            (cfg.get("display_name") or "", cfg["from_address"]))
+        if to:
+            msg["To"] = to
+        msg["Subject"] = subject
+        msg["Date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+        try:
+            from routes.email_routes import _apply_odysseus_headers
+            _apply_odysseus_headers(msg, kind="task", ref_id=card.scheduled_task_id)
+        except Exception:
+            msg["X-Odysseus-Kind"] = "task"
+            if card.scheduled_task_id:
+                msg["X-Odysseus-Ref"] = card.scheduled_task_id
+        with _imap(owner=card.owner or "") as imap:
+            imap.append(_detect_drafts_folder(imap), "\\Draft", None, msg.as_bytes())
+        logger.info("Board card %s: draft saved to IMAP Drafts (%s)", card.id, subject)
+        return True
+    except Exception:
+        logger.info("Board card %s: draft not saved to IMAP (will retry on next "
+                    "board read)", card.id, exc_info=True)
+        return False
+
+
+def _draft_save_worker(card_id: str):
+    """Thread body: re-read the card in a fresh session, save, mark once."""
+    try:
+        db = SessionLocal()
+        try:
+            card = db.query(UserTask).filter(UserTask.id == card_id).first()
+            if card and card.result and not card.draft_saved:
+                if _save_email_draft(card):
+                    card.draft_saved = 1
+                    db.commit()
+        finally:
+            db.close()
+    finally:
+        with _draft_saves_lock:
+            _draft_saves_inflight.discard(card_id)
+
+
+def _queue_draft_save(card_id: str):
+    """Fire-and-forget draft save; the in-flight set stops a burst of board
+    reads from appending the same draft twice."""
+    with _draft_saves_lock:
+        if card_id in _draft_saves_inflight:
+            return
+        _draft_saves_inflight.add(card_id)
+    threading.Thread(target=_draft_save_worker, args=(card_id,),
+                     daemon=True, name=f"board-draft-{card_id[:8]}").start()
 
 
 def _reconcile_handed_off(db, owner) -> int:
@@ -254,6 +419,21 @@ def _reconcile_handed_off(db, owner) -> int:
         changed += 1
     if changed:
         db.commit()
+
+    # ADR-0015: completed email-draft results also land in the stock IMAP
+    # Drafts folder (async, once). This sweep catches both fresh flips above
+    # and earlier failures (draft_saved stays 0 until a save succeeds).
+    pending_drafts = db.query(UserTask).filter(
+        UserTask.status == "in_review",
+        UserTask.bucket == "email-draft",
+        UserTask.run_status == "success",
+        UserTask.result.isnot(None),
+    )
+    if owner:
+        pending_drafts = pending_drafts.filter(UserTask.owner == owner)
+    for card in pending_drafts.all():
+        if not card.draft_saved:
+            _queue_draft_save(card.id)
     return changed
 
 
@@ -361,6 +541,14 @@ def setup_board_routes(task_scheduler) -> APIRouter:
                 card.horizon = _valid_horizon(req.horizon)
             if req.estimate_minutes is not None:
                 card.estimate_minutes = req.estimate_minutes if req.estimate_minutes > 0 else None
+            if req.result is not None:
+                # Human edit of the agent output (ADR-0015 learn-from-edit).
+                # The pristine agent draft is preserved exactly once so the
+                # brain can diff original vs edited later — never overwritten
+                # by subsequent edits.
+                if card.result_original is None and card.result:
+                    card.result_original = card.result
+                card.result = req.result
             if req.status is not None:
                 if req.status not in VALID_STATUSES:
                     raise HTTPException(400, f"Invalid status '{req.status}'")
@@ -413,29 +601,13 @@ def setup_board_routes(task_scheduler) -> APIRouter:
                     prompt += f"\n\nContext / notes:\n{card.notes}"
                 if card.due:
                     prompt += f"\n\nDeadline: {card.due}"
+                if card.context_url:
+                    # ADR-0015: a capture-sourced card carries its recording's
+                    # pull URL — the agent grounds in the actual conversation.
+                    prompt += _CONTEXT_URL_BLOCK.format(url=card.context_url)
 
-            task = ScheduledTask(
-                id=str(uuid.uuid4()),
-                owner=card.owner,
-                name=f"[Board] {card.title[:80]}",
-                prompt=prompt,
-                task_type=req.task_type,
-                trigger_type="schedule",
-                schedule="once",
-                next_run=None,          # fired immediately below, not by the loop
-                status="active",
-                output_target="none",   # the board card is the delivery surface
-                model=req.model,
-                run_count=0,
-                email_results=False,
-                created_at=_utcnow(),
-                updated_at=_utcnow(),
-            )
-            db.add(task)
-            card.scheduled_task_id = task.id
-            card.status = "handed_off"
-            card.run_status = None
-            card.result = None
+            task = _create_handoff_task(db, card, prompt, req.task_type,
+                                        model=req.model)
             db.commit()
             task_id = task.id
         finally:
@@ -471,10 +643,17 @@ def setup_board_routes(task_scheduler) -> APIRouter:
     @router.post("/ingest")
     async def ingest(request: Request):
         """Webhook for external capture pipelines (even-odysseus Task
-        Manager sink). Accepts a single {text, due, source, added_at}
-        object or a list of them. Idempotent on (owner, source, added_at,
-        text) so a buffered sink can retry safely. New cards land in the
-        backlog."""
+        Manager sink). Accepts a single item or a list. Idempotent on
+        (owner, source, added_at, text) so a buffered sink can retry safely
+        — a dupe skips the card AND any handoff.
+
+        ADR-0015 v2 (all optional, lenient — a bad field is dropped, the
+        card is kept): `planned_date` lands the card pre-scheduled on that
+        day column, else `horizon` picks the backlog group (default 'week');
+        `session_id`/`context_url` carry recording provenance; `bucket`
+        labels the card; `prompt` + `task_type` trigger an immediate
+        internal handoff (same path as drag-to-agent) so a brain-confirmed
+        agent task executes on a LINKED card — its result lands here."""
         user = _owner(request)
         try:
             body = await request.json()
@@ -488,7 +667,8 @@ def setup_board_routes(task_scheduler) -> APIRouter:
             except Exception:
                 items.append(None)
         db = SessionLocal()
-        created, skipped = 0, 0
+        created, skipped, handed_off = 0, 0, 0
+        handoff_task_ids = []
         try:
             for item in items:
                 if item is None or not (item.text or "").strip():
@@ -501,28 +681,53 @@ def setup_board_routes(task_scheduler) -> APIRouter:
                 if dupe_q.first():
                     skipped += 1
                     continue
-                due = None
+                due = planned = horizon = None
                 try:
                     due = _valid_date(item.due)
                 except HTTPException:
                     pass  # bad due date from a capture pipeline: keep the task, drop the date
-                db.add(UserTask(
+                try:
+                    planned = _valid_date(item.planned_date)
+                except HTTPException:
+                    pass
+                try:
+                    horizon = _valid_horizon(item.horizon)
+                except HTTPException:
+                    pass
+                card = UserTask(
                     id=str(uuid.uuid4()),
                     owner=user,
                     title=item.text.strip()[:500],
                     due=due,
-                    planned_date=None,
+                    planned_date=planned,
                     status="todo",
-                    position=_next_position(db, user, None),
+                    position=_next_position(db, user, planned),
                     source=(item.source or "bridge")[:50],
                     source_ref=ref,
-                    horizon="week",  # fresh captures surface in the nearest horizon
+                    session_id=(item.session_id or None),
+                    context_url=(item.context_url or None),
+                    bucket=(item.bucket or None),
+                    # scheduled cards need no horizon; backlog cards surface
+                    # in the given group, else the nearest one
+                    horizon=None if planned else (horizon or "week"),
                     created_at=_utcnow(),
-                ))
+                )
+                db.add(card)
                 created += 1
+                prompt = (item.prompt or "").strip()
+                if prompt and item.task_type in ("llm", "research"):
+                    task = _create_handoff_task(db, card, prompt, item.task_type)
+                    handoff_task_ids.append(task.id)
+                    handed_off += 1
             db.commit()
         finally:
             db.close()
-        return {"ok": True, "created": created, "skipped": skipped}
+        for tid in handoff_task_ids:
+            started = await task_scheduler.run_task_now(tid)
+            if not started:
+                logger.warning("Board ingest handoff %s queued but scheduler "
+                               "did not start it", tid)
+        return {"ok": True, "created": created, "skipped": skipped,
+                "handed_off": handed_off}
 
     return router

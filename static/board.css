@@ -106,6 +106,74 @@
   min-height: 0;
 }
 
+/* ── Capture Inbox: agent-execution confirm gate (ADR-0015) ── */
+.board-inbox {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+  min-height: 0;
+}
+.board-inbox .board-col-head { padding: 12px 12px 6px; }
+.board-inbox .board-col-head .board-col-count { color: var(--accent, var(--color-accent)); }
+.board-inbox-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.board-inbox-card {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel) 68%, var(--bg));
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.board-inbox-text { font-size: 12px; line-height: 1.4; overflow-wrap: break-word; }
+.board-inbox-meta { font-size: 10px; font-weight: 300; color: var(--color-muted); }
+.board-inbox-buckets { display: flex; gap: 4px; flex-wrap: wrap; }
+.board-inbox-bucket {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 8px;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.board-inbox-bucket:hover { color: var(--fg); }
+.board-inbox-bucket:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
+.board-inbox-bucket.picked { border-style: solid; border-color: var(--fg); color: var(--fg); }
+.board-inbox-actions { display: flex; gap: 6px; }
+.board-inbox-actions button {
+  flex: 1;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--color-muted);
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.board-inbox-actions button:hover { color: var(--fg); }
+.board-inbox-actions button:disabled { opacity: 0.4; cursor: default; }
+.board-inbox-actions button:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
+.board-inbox-actions .bi-confirm {
+  color: var(--accent, var(--color-accent));
+  border-color: var(--accent, var(--color-accent));
+}
+
 /* ── Agents column: the far-left teammate ── */
 .board-agents {
   width: 216px;
@@ -252,6 +320,7 @@
 }
 #board-pane .board-col,
 #board-pane .board-backlog,
+#board-pane .board-inbox,
 #board-pane .board-agents {
   animation: board-col-in 180ms ease-out both;
   animation-delay: calc(var(--col-i, 0) * 60ms);
@@ -259,6 +328,7 @@
 @media (prefers-reduced-motion: reduce) {
   #board-pane .board-col,
   #board-pane .board-backlog,
+  #board-pane .board-inbox,
   #board-pane .board-agents {
     animation-duration: 120ms;
     animation-name: board-col-fade;
@@ -399,6 +469,33 @@
 .board-card-channel { white-space: nowrap; }
 .board-card-due { white-space: nowrap; }
 .board-card-due.overdue { color: var(--warn); }
+.board-card-capture {
+  white-space: nowrap;
+  border: 1px dashed color-mix(in srgb, var(--color-muted) 70%, transparent);
+  border-radius: 999px;
+  padding: 0 6px;
+  letter-spacing: 0.06em;
+}
+/* one-hover dismiss on auto-landed capture todos (delete = dismiss) */
+.board-card-dismiss {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  transition: color 150ms ease-out;
+}
+.board-card:hover .board-card-dismiss,
+.board-card:focus-within .board-card-dismiss { display: block; }
+.board-card-dismiss:hover { color: var(--warn); }
+.board-card-dismiss:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
 
 /* ── header channel filter ── */
 .board-channel-filter {
@@ -608,6 +705,52 @@
   color: var(--color-muted);
 }
 .board-detail-result-label .run-error { color: var(--warn); }
+.board-detail-result-label .bd-edit-draft {
+  margin-left: 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 8px;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.board-detail-result-label .bd-edit-draft:hover { color: var(--fg); border-color: color-mix(in srgb, var(--fg) 50%, var(--border)); }
+.board-detail-result-label .bd-edit-draft:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
+.bd-draft-editor { display: flex; flex-direction: column; gap: 8px; }
+.bd-draft-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 180px;
+  background: color-mix(in srgb, var(--bg) 70%, var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 300;
+  line-height: 1.5;
+  padding: 10px 12px;
+  resize: vertical;
+}
+.bd-draft-textarea:focus { outline: none; border-color: color-mix(in srgb, var(--fg) 40%, var(--border)); }
+.bd-session-link {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.bd-session-link:hover { color: var(--fg); border-color: color-mix(in srgb, var(--fg) 50%, var(--border)); }
+.bd-session-link:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
 .board-detail-actions {
   display: flex;
   gap: 8px;
@@ -670,6 +813,7 @@
   }
   .board-cols { display: contents; }
   .board-agents,
+  .board-inbox,
   .board-backlog {
     width: 64vw;
     flex-shrink: 0;
