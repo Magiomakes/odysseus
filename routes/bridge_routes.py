@@ -4,11 +4,15 @@ bridge_routes.py — thin read/act proxy to the even-odysseus brain service.
 The capture pipeline (glasses → ingest → whisper → extraction) lives in a
 separate local service (the "brain", default http://127.0.0.1:8765) and owns
 ALL of its data: session folders on disk, the review queue in the Self-Model
-DB. This module makes those two surfaces usable INSIDE Odysseus — a "Captures"
-pane with the pending review inbox (confirm / dismiss / reclassify) and a
-sessions browser (record + transcript + audio) — WITHOUT copying any state:
-every route is a proxy, so the brain stays the single source of truth and the
-phone plugin, the daily report, and this pane can never disagree.
+DB. This module makes those surfaces usable INSIDE Odysseus WITHOUT copying any
+state: every route is a proxy, so the brain stays the single source of truth
+and the phone plugin, the daily report, and these UIs can never disagree.
+
+Consumers (ADR-0015 split): the "Captures" window (static/js/bridge.js) is
+the recorded-sessions browser and uses only /sessions*; the /review* proxies
+are consumed by the My Tasks board's Inbox section (feat/task-board mod) —
+capture DECISIONS live on the board now. /draft-feedback forwards an
+operator's email-draft edit to the brain's learn-from-edit endpoint.
 
 Modularity contract (LOCAL-MODS.md): self-contained in this file + the
 self-injecting static/js/bridge.js UI; app.py's only hook is one include_router
@@ -131,6 +135,34 @@ def setup_bridge_routes() -> APIRouter:
             raise HTTPException(400, "index and disposition are required")
         return await _brain("POST", "/api/self/review/resolve",
                             json_body=allowed, timeout=_T_RESOLVE)
+
+    @router.post("/draft-feedback")
+    async def draft_feedback(request: Request):
+        """Forward an edited email draft to the brain's learn-from-edit
+        endpoint (ADR-0015): the brain Gemma-compares original vs edited and
+        appends recipient facts to the Odysseus contact store. Slow (model
+        call) — rides the classify-class timeout. Body is whitelisted and
+        length-bounded; the edit itself was already saved by the board PATCH,
+        so a failure here loses only the learning, never the edit."""
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON body")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "body must be an object")
+        allowed = {}
+        for key, cap in (("card_id", 64), ("title", 500), ("original", 20000),
+                         ("edited", 20000), ("session_id", 200)):
+            if key in body:
+                val = body[key]
+                if not isinstance(val, str) or len(val) > cap:
+                    raise HTTPException(400, f"{key} must be a string ≤ {cap} chars")
+                allowed[key] = val
+        for req_key in ("card_id", "original", "edited"):
+            if req_key not in allowed:
+                raise HTTPException(400, "card_id, original and edited are required")
+        return await _brain("POST", "/api/self/draft_feedback",
+                            json_body=allowed, timeout=_T_CLASSIFY)
 
     @router.get("/sessions")
     async def sessions(request: Request):

@@ -104,3 +104,43 @@ def test_unconfigured_review_is_503(monkeypatch):
     with pytest.raises(HTTPException) as e:
         _run(_endpoint(router, "GET", "/api/bridge/review")(_req()))
     assert e.value.status_code == 503
+
+
+def test_draft_feedback_forwards_whitelisted_fields(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    ep = _endpoint(router, "POST", "/api/bridge/draft-feedback")
+    body = {"card_id": "c1", "title": "Email Delaney", "original": "Hi,",
+            "edited": "Hi Delaney,", "session_id": "2026-08-21_0900",
+            "evil": "field"}
+    _run(ep(_req(body)))
+    assert calls == [("POST", "/api/self/draft_feedback",
+                      {"card_id": "c1", "title": "Email Delaney",
+                       "original": "Hi,", "edited": "Hi Delaney,",
+                       "session_id": "2026-08-21_0900"})]
+
+
+def test_draft_feedback_requires_core_fields(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    ep = _endpoint(router, "POST", "/api/bridge/draft-feedback")
+    with pytest.raises(HTTPException) as e:
+        _run(ep(_req({"card_id": "c1", "original": "x"})))
+    assert e.value.status_code == 400
+    assert calls == []
+
+
+def test_draft_feedback_bounds_lengths(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    ep = _endpoint(router, "POST", "/api/bridge/draft-feedback")
+    with pytest.raises(HTTPException) as e:
+        _run(ep(_req({"card_id": "c1", "original": "x" * 20001, "edited": "y"})))
+    assert e.value.status_code == 400
+    assert calls == []
+
+
+def test_draft_feedback_unconfigured_is_503(monkeypatch):
+    monkeypatch.delenv("BRIDGE_TOKEN", raising=False)
+    router = bridge_routes.setup_bridge_routes()
+    ep = _endpoint(router, "POST", "/api/bridge/draft-feedback")
+    with pytest.raises(HTTPException) as e:
+        _run(ep(_req({"card_id": "c1", "original": "x", "edited": "y"})))
+    assert e.value.status_code == 503
