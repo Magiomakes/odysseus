@@ -16,8 +16,13 @@
 // and sidebar entry — index.html's only hook is this script tag.
 
 import { showToast } from './ui.js';
+import * as Modals from './modalManager.js';
+import { makeWindowDraggable } from './windowDrag.js';
 
 const API = window.location.origin;
+const MODAL_ID = 'board-modal';
+
+const BOARD_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="8" rx="1"/></svg>';
 const HOME_KEY = 'board-home-view';
 const COLLAPSE_KEY = 'board-horizons-collapsed';
 const SHOW_AGENTS_KEY = 'board-show-agents';
@@ -577,7 +582,6 @@ function _headerEl() {
   const backlogOn = _railOn(SHOW_BACKLOG_KEY);
   const workingN = _tasks.filter(t => _inAgentsCol(t)).length;
   head.innerHTML = `
-    <span class="board-title">My Tasks</span>
     <span class="board-range">${today} → ${_addDays(today, 6)}</span>
     <select class="board-channel-filter" title="Filter by channel">${opts}</select>
     <span class="board-header-spacer"></span>
@@ -585,15 +589,13 @@ function _headerEl() {
       title="Show/hide the agents column">agents${!agentsOn && workingN ? ` (${workingN})` : ''}</button>
     <button class="board-rail-toggle${backlogOn ? '' : ' rail-off'}" data-rail="backlog"
       title="Show/hide the backlog">backlog</button>
-    <button id="board-refresh-btn" title="Refresh">refresh</button>
-    <button id="board-close-btn" title="Close (Esc)">close</button>`;
+    <button id="board-refresh-btn" title="Refresh">refresh</button>`;
   head.querySelector('.board-channel-filter').addEventListener('change', e => {
     _channelFilter = e.target.value || null;
     _render();
   });
   head.querySelector('[data-rail="agents"]').addEventListener('click', () => _railToggle(SHOW_AGENTS_KEY));
   head.querySelector('[data-rail="backlog"]').addEventListener('click', () => _railToggle(SHOW_BACKLOG_KEY));
-  head.querySelector('#board-close-btn').addEventListener('click', closeBoard);
   head.querySelector('#board-refresh-btn').addEventListener('click', _refresh);
   return head;
 }
@@ -827,40 +829,78 @@ function _renderDetail(t) {
   document.body.appendChild(backdrop);
 }
 
-/* ── open / close / bootstrap ── */
+/* ── open / close / bootstrap ──
+   Stock floating-window model (operator direction 2026-08-21): the board is a
+   draggable/resizable/minimizable `.modal` window like every built-in tool —
+   built on open, torn down on close, chip-docked on minimize — NOT a
+   full-screen fixed pane. The board's own render machinery is untouched: it
+   still targets #board-pane, which now lives inside the modal body. */
 
 export async function openBoard() {
-  const pane = document.getElementById('board-pane');
-  if (!pane) return;
+  if (document.getElementById(MODAL_ID)) {
+    if (Modals.isMinimized(MODAL_ID)) Modals.restore(MODAL_ID);
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.id = MODAL_ID;
+  modal.innerHTML = `
+    <div class="modal-content board-modal-content">
+      <div class="modal-header">
+        <h4>${BOARD_ICON}<span style="margin-left:6px">My Tasks</span></h4>
+        <span style="flex:1"></span>
+        <button class="close-btn" title="Close">✖</button>
+      </div>
+      <div class="modal-body board-modal-body">
+        <div id="board-pane" role="region" aria-label="My Tasks board"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  Modals.register(MODAL_ID, {
+    sidebarBtnId: 'tool-board-btn',
+    label: 'My Tasks',
+    icon: BOARD_ICON,
+    restoreFn: () => { _refresh(); },
+    closeFn: _teardown,
+  });
+  Modals.injectMinimizeButton(modal, MODAL_ID);
+  modal.querySelector('.close-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    Modals.close(MODAL_ID);
+  });
+  {
+    const content = modal.querySelector('.modal-content');
+    const header = modal.querySelector('.modal-header');
+    if (content && header) makeWindowDraggable(modal, { content, header });
+  }
+
   _open = true;
-  pane.classList.add('open');
   document.getElementById('tool-board-btn')?.classList.add('active');
   _loadModels();  // fire-and-forget; picker falls back to "default model"
   await _refresh();
 }
 
-export function closeBoard() {
+// Full teardown — invoked by Modals.close (✖ button, closeBoard, Esc).
+function _teardown() {
   _open = false;
   _closeDetail();
   document.getElementById('board-picker-backdrop')?.remove();
   if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
-  document.getElementById('board-pane')?.classList.remove('open');
+  document.getElementById(MODAL_ID)?.remove();
   document.getElementById('tool-board-btn')?.classList.remove('active');
 }
 
-function _injectDom() {
-  if (document.getElementById('board-pane')) return;
+export function closeBoard() {
+  if (Modals.isRegistered(MODAL_ID)) Modals.close(MODAL_ID);
+  else _teardown();
+}
 
+function _injectDom() {
   const link = document.createElement('link');
   link.rel = 'stylesheet';
   link.href = '/static/board.css';
   document.head.appendChild(link);
-
-  const pane = document.createElement('div');
-  pane.id = 'board-pane';
-  pane.setAttribute('role', 'region');
-  pane.setAttribute('aria-label', 'My Tasks board');
-  document.body.appendChild(pane);
 
   const notesBtn = document.getElementById('tool-notes-btn');
   if (notesBtn && !document.getElementById('tool-board-btn')) {
@@ -876,12 +916,17 @@ function _injectDom() {
         <rect x="17" y="3" width="5" height="8" rx="1"/>
       </svg>
       <span class="grow">My Tasks</span>`;
-    item.addEventListener('click', () => (_open ? closeBoard() : openBoard()));
+    // Stock sidebar semantics: closed → open, minimized → restore, open → minimize.
+    item.addEventListener('click', () => {
+      if (!document.getElementById(MODAL_ID)) { openBoard(); return; }
+      if (Modals.isMinimized(MODAL_ID)) Modals.restore(MODAL_ID);
+      else Modals.minimize(MODAL_ID);
+    });
     notesBtn.parentNode.insertBefore(item, notesBtn);
   }
 
   document.addEventListener('keydown', e => {
-    if (!_open) return;
+    if (!_open || Modals.isMinimized(MODAL_ID)) return;
     if (e.key === 'Escape') {
       if (document.getElementById('board-picker-backdrop')) {
         document.getElementById('board-picker-backdrop').remove();
