@@ -193,8 +193,17 @@ async function _refresh() {
 /* ── open / close (stock floating-window lifecycle) ── */
 
 export async function openCaptures() {
-  if (document.getElementById(MODAL_ID)) {
-    if (Modals.isMinimized(MODAL_ID)) Modals.restore(MODAL_ID);
+  const existing = document.getElementById(MODAL_ID);
+  if (existing) {
+    if (Modals.isMinimized(MODAL_ID)) { Modals.restore(MODAL_ID); return; }
+    // Stock mobile gestures (swipe-down sheet dismiss, backdrop tap) hide
+    // the modal directly in ui.js without telling modalManager. For a
+    // teardown-on-close window that left a hidden-but-registered zombie
+    // that open() refused to reopen. Normalize to a real minimize→restore.
+    if (existing.classList.contains('hidden')) {
+      Modals.minimize(MODAL_ID);
+      Modals.restore(MODAL_ID);
+    }
     return;
   }
   const modal = document.createElement('div');
@@ -285,12 +294,27 @@ function _injectDom() {
       <span class="grow">Captures</span>`;
     // Stock sidebar semantics: closed → open, minimized → restore, open → minimize.
     item.addEventListener('click', () => {
-      if (!document.getElementById(MODAL_ID)) { openCaptures(); return; }
-      if (Modals.isMinimized(MODAL_ID)) Modals.restore(MODAL_ID);
-      else Modals.minimize(MODAL_ID);
+      const modal = document.getElementById(MODAL_ID);
+      if (!modal) { openCaptures(); return; }
+      if (Modals.isMinimized(MODAL_ID) || modal.classList.contains('hidden')) {
+        openCaptures();  // restores, or recovers a gesture-hidden sheet
+      } else {
+        Modals.minimize(MODAL_ID);
+      }
     });
     anchor.parentNode.insertBefore(item, anchor);
   }
+
+  // Mobile swipe-down fires `modal-dismissed` AFTER ui.js has already hidden
+  // the modal. Stock big tools (cookbook/calendar/email) re-route that to
+  // minimize via modalManager's allowlist; this window isn't on it, so do the
+  // same re-route mod-locally — otherwise the sheet is hidden with `_open`
+  // still true and no dock chip, and it can never be reopened.
+  window.addEventListener('modal-dismissed', (e) => {
+    if (e.detail?.id !== MODAL_ID) return;
+    if (!document.getElementById(MODAL_ID)) return;
+    Modals.minimize(MODAL_ID);
+  });
 
   document.addEventListener('keydown', e => {
     if (!_open || Modals.isMinimized(MODAL_ID)) return;
