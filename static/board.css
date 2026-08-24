@@ -797,12 +797,19 @@
    day columns are siblings in a single scrollable row; each column is
    ~3/4 viewport wide, Sunsama-mobile-style. */
 /* Stock bottom-sheet sizing on phones (the .modal media rules position it;
-   we just let the content fill). */
+   we just let the content fill). Mirror the stock TOOL sheets (#cookbook-modal
+   etc. in style.css): full viewport height, top edge to bottom. The generic
+   .modal-content mobile rule caps sheets at 85dvh with height:auto !important,
+   so the ID-scoped selector + !important are required to beat it — a bare
+   class rule silently loses and the board stopped short of the top. */
 @media (max-width: 768px) {
-  .board-modal-content {
-    width: 100%;
-    height: 94dvh;
-    max-height: 94dvh;
+  #board-modal .board-modal-content {
+    width: 100% !important;
+    max-height: 100vh !important;
+    max-height: 100dvh !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
   }
 }
 
