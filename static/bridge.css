@@ -45,11 +45,18 @@
     transition: left 0.25s ease, width 0.25s ease;
   }
 }
+/* Mirror the stock TOOL sheets (#cookbook-modal etc. in style.css): full
+   viewport height. The generic .modal-content mobile rule caps sheets at
+   85dvh with height:auto !important, so the ID-scoped selector + !important
+   are required to beat it — a bare class rule silently loses. */
 @media (max-width: 768px) {
-  .bridge-modal-content {
-    width: 100%;
-    height: 94dvh;
-    max-height: 94dvh;
+  #bridge-modal .bridge-modal-content {
+    width: 100% !important;
+    max-height: 100vh !important;
+    max-height: 100dvh !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
   }
 }
 
