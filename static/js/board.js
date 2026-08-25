@@ -59,6 +59,7 @@ let _open = false;
 let _dragId = null;
 let _pollTimer = null;
 let _detailCardId = null;
+let _lastPaint = '';   // fingerprint of the data currently on screen
 
 // Capture Inbox (ADR-0015): pending capture decisions moved here from the
 // old Captures pane. Fed by the bridge mod's /api/bridge/review proxies —
@@ -782,9 +783,19 @@ function _columnEl(date, { label, extraClass = '', colIndex = 0, cards = null } 
   return col;
 }
 
+function _fingerprint() {
+  // _today() included: the TODAY column must move at midnight even if no
+  // task changed.
+  return JSON.stringify([_tasks, _inbox, _channelFilter, _today()]);
+}
+
 function _render() {
   const pane = document.getElementById('board-pane');
   if (!pane) return;
+  _lastPaint = _fingerprint();
+  // The column entrance animation belongs to opening the board, not to
+  // repaints — replaying it on every poll reads as a page-reload flicker.
+  pane.classList.toggle('board-enter', pane.childElementCount === 0);
   // Re-renders must not yank the strip back to the left edge.
   const prevBody = pane.querySelector('.board-body');
   const prevScroll = prevBody
@@ -840,12 +851,16 @@ async function _refresh() {
     showToast(`Board load failed: ${err.message}`);
     return;
   }
-  _render();
-  _schedulePoll();
-  if (_detailCardId) {
-    const t = _tasks.find(x => x.id === _detailCardId);
-    if (t) _renderDetail(t);
+  // Polls land here every 15–90s; repainting identical data is pure
+  // flicker (and would clobber an open detail overlay mid-edit).
+  if (_fingerprint() !== _lastPaint) {
+    _render();
+    if (_detailCardId) {
+      const t = _tasks.find(x => x.id === _detailCardId);
+      if (t) _renderDetail(t);
+    }
   }
+  _schedulePoll();
 }
 
 function _schedulePoll() {
@@ -1102,6 +1117,7 @@ export async function openBoard() {
 // Full teardown — invoked by Modals.close (✖ button, closeBoard, Esc).
 function _teardown() {
   _open = false;
+  _lastPaint = '';
   _closeDetail();
   document.getElementById('board-picker-backdrop')?.remove();
   if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
