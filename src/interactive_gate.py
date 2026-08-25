@@ -96,6 +96,13 @@ def should_track_interactive_request(path: str, method: str = "GET") -> bool:
         return False
     if any(path.startswith(prefix) for prefix in _PASSIVE_PREFIXES):
         return False
+    # Notes READS fire on background timers from every open tab (the due-badge
+    # refresh every 5 min and the calendar-reminder sweep both GET /api/notes)
+    # — automatic polls, not user presence. Writes stay foreground: someone
+    # editing a note really is at the keyboard.
+    if (method or "").upper() == "GET" and (
+            path == "/api/notes" or path.startswith("/api/notes/")):
+        return False
     return True
 
 

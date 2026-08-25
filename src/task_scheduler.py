@@ -2250,8 +2250,31 @@ class TaskScheduler:
         """
         async with self._executing_lock:
             task_ids = list(self._executing)
+        # Board handoffs ("[Board] …", routes/board_routes.py) are EXPLICIT user
+        # requests being watched from the My Tasks board — not deferrable
+        # housekeeping. Cancelling them on foreground activity meant the very
+        # act of watching the board (heartbeat, notes/badge timer polls) killed
+        # the worker, and after MAX_ABORT_RETRIES the card failed as "Stopped
+        # by user" with nobody at the keyboard. They still respect the model
+        # slot and the interactive-quiet wait before STARTING; once running,
+        # they get to finish.
+        protected: set = set()
+        if task_ids:
+            from core.database import SessionLocal, ScheduledTask
+            db = SessionLocal()
+            try:
+                rows = db.query(ScheduledTask.id, ScheduledTask.name).filter(
+                    ScheduledTask.id.in_(task_ids)).all()
+                protected = {tid for tid, name in rows
+                             if (name or "").startswith("[Board] ")}
+            except Exception:
+                logger.debug("board-task protection lookup failed", exc_info=True)
+            finally:
+                db.close()
         stopped = 0
         for task_id in task_ids:
+            if task_id in protected:
+                continue
             handle = self._task_handles.get(task_id)
             if handle and not handle.done():
                 handle.cancel()
