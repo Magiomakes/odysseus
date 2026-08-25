@@ -313,23 +313,25 @@
   background: color-mix(in srgb, var(--panel) 35%, var(--bg));
 }
 
-/* Column entrance — the one orchestrated moment. */
+/* Column entrance — the one orchestrated moment. Plays only on the first
+   paint after opening (.board-enter, set by _render): poll repaints must
+   not replay it or the board flickers like a page reload. */
 @keyframes board-col-in {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-#board-pane .board-col,
-#board-pane .board-backlog,
-#board-pane .board-inbox,
-#board-pane .board-agents {
+#board-pane.board-enter .board-col,
+#board-pane.board-enter .board-backlog,
+#board-pane.board-enter .board-inbox,
+#board-pane.board-enter .board-agents {
   animation: board-col-in 180ms ease-out both;
   animation-delay: calc(var(--col-i, 0) * 60ms);
 }
 @media (prefers-reduced-motion: reduce) {
-  #board-pane .board-col,
-  #board-pane .board-backlog,
-  #board-pane .board-inbox,
-  #board-pane .board-agents {
+  #board-pane.board-enter .board-col,
+  #board-pane.board-enter .board-backlog,
+  #board-pane.board-enter .board-inbox,
+  #board-pane.board-enter .board-agents {
     animation-duration: 120ms;
     animation-name: board-col-fade;
   }
