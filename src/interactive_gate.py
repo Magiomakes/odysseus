@@ -65,6 +65,11 @@ _PASSIVE_EXACT_PATHS = {
     "/api/tasks/notifications",
     "/api/research/active",
     "/api/email/urgency-state",
+    # Same class of automatic badge poll as urgency-state above: every open
+    # tab fires it on a timer whether or not the user is present. An idle
+    # phone tab's 30-min poll was cancelling agent handoff runs mid-flight
+    # ("Stopped by user" with nobody at the keyboard).
+    "/api/email/unread-state",
 }
 
 _PASSIVE_PREFIXES = (
@@ -75,6 +80,10 @@ _PASSIVE_PREFIXES = (
     # the model, and treating them as foreground would cancel the very agent
     # runs the board exists to watch (watch the worker → kill the worker).
     "/api/board/",
+    # The board's Inbox section and the Captures window poll these bridge
+    # proxies on the same cadence as /api/board/ — same watch-the-worker
+    # problem (a review poll cancelled the nightly question agent).
+    "/api/bridge/",
 )
 
 
