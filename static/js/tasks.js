@@ -3121,6 +3121,19 @@ export function isTasksOpen() { return _open; }
 
 let _notifInterval = null;
 
+// Where does this notification's result actually live? Returns a
+// {label, open} pair for the click-through, or null when there's nowhere
+// better than the Tasks tab to go.
+function _notifTarget(n) {
+  if (n.document_id && window.documentModule?.loadDocument) {
+    return { label: 'open doc', open: () => window.documentModule.loadDocument(n.document_id) };
+  }
+  if (n.session_id && window.sessionModule?.selectSession) {
+    return { label: 'open', open: () => window.sessionModule.selectSession(n.session_id) };
+  }
+  return null;
+}
+
 async function _pollTaskNotifications() {
   try {
     const res = await fetch(`${API_BASE}/api/tasks/notifications`, { credentials: 'same-origin' });
@@ -3138,6 +3151,7 @@ async function _pollTaskNotifications() {
           _setTaskCompletionPending(true);
         }
       }
+      const target = ok ? _notifTarget(n) : null;
       // Tasks with output_target='notification' carry the result text in `body`
       // — show it as a real browser Notification (richer than a toast). Falls
       // back to a toast when permission is denied or unavailable.
@@ -3146,17 +3160,27 @@ async function _pollTaskNotifications() {
         let fired = false;
         try {
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-            new Notification(title, { body: n.body, tag: 'task-' + (n.task_id || title), icon: '/static/favicon.ico' });
+            const notif = new Notification(title, { body: n.body, tag: 'task-' + (n.task_id || title), icon: '/static/favicon.ico' });
+            if (target) {
+              notif.onclick = () => { try { window.focus(); } catch (_) {} target.open(); notif.close(); };
+            }
             fired = true;
           }
         } catch (_) {}
-        if (!fired && uiModule) uiModule.showToast(title + ': ' + n.body.slice(0, 140), { duration: 7000 });
+        if (!fired && uiModule) {
+          uiModule.showToast(title + ': ' + n.body.slice(0, 140),
+            target ? { duration: 7000, action: target.label, onAction: target.open }
+                   : { duration: 7000 });
+        }
         continue;
       }
       const msg = `Task ${ok ? 'finished' : 'failed'}: ${n.task_name}`;
       if (!uiModule) continue;
-      if (ok) uiModule.showToast(msg, { duration: 5000 });
-      else {
+      if (ok) {
+        uiModule.showToast(msg,
+          target ? { duration: 8000, action: target.label, onAction: target.open }
+                 : { duration: 5000 });
+      } else {
         _setTaskFailurePending(true);
         uiModule.showError(msg);
         if (_open && document.querySelector('.tasks-tab.active[data-tab="activity"]')) {
@@ -3185,3 +3209,9 @@ function stopNotificationPolling() {
 const tasksModule = { openTasks, closeTasks, isTasksOpen, startNotificationPolling, stopNotificationPolling };
 export default tasksModule;
 window.tasksModule = tasksModule;
+
+// Poll from app load, not from the first Tasks-modal open: completed-task
+// notifications used to be invisible until the user happened to open Tasks
+// once per page load. Anonymous/unreachable polls no-op server-side.
+startNotificationPolling();
+setTimeout(_pollTaskNotifications, 8000);

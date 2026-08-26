@@ -318,8 +318,8 @@ def _save_email_draft(card) -> bool:
         logger.info("Board card %s: draft saved to IMAP Drafts (%s)", card.id, subject)
         return True
     except Exception:
-        logger.info("Board card %s: draft not saved to IMAP (will retry on next "
-                    "board read)", card.id, exc_info=True)
+        logger.warning("Board card %s: draft not saved to IMAP (will retry on "
+                       "next board read)", card.id, exc_info=True)
         return False
 
 
@@ -417,6 +417,28 @@ def _reconcile_handed_off(db, owner) -> int:
         card.result = run.result or run.error or "(no output)"
         card.status = "in_review"
         changed += 1
+        # Research results also land in the stock Documents library (same
+        # ADR-0015 move as email-drafts → IMAP Drafts): discoverable where
+        # the operator already looks, not only inside this card. The
+        # handed_off → in_review flip happens exactly once, so no once-flag.
+        # Capture-born cards carry bucket="research"; manual drag-to-agents
+        # handoffs carry it on the linked task's task_type instead.
+        is_research = card.bucket == "research"
+        if not is_research and run.status == "success":
+            t = db.query(ScheduledTask.task_type).filter(
+                ScheduledTask.id == card.scheduled_task_id).first()
+            is_research = bool(t and t.task_type == "research")
+        if run.status == "success" and is_research and run.result:
+            from src.document_actions import create_result_document
+            doc_id = create_result_document(
+                title=card.title or "Research result",
+                content=run.result,
+                owner=card.owner or None,
+                summary="Board research handoff result",
+            )
+            if doc_id:
+                logger.info("Board card %s: research result saved to "
+                            "Documents (%s)", card.id, doc_id)
     if changed:
         db.commit()
 
