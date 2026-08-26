@@ -118,3 +118,41 @@ def test_quiet_gate_max_wait_override(monkeypatch):
     t0 = time.monotonic()
     assert _run(gate.wait_for_interactive_quiet("t", max_wait_override=0.3)) is True
     assert time.monotonic() - t0 < 2.0
+
+
+# ── user-priority task predicate (task_scheduler._is_priority_task) ──────────
+
+def test_priority_predicate_covers_board_and_nightly(monkeypatch):
+    from src import task_scheduler as ts
+    # Default prefixes: board handoffs + the even-odysseus nightly agents.
+    monkeypatch.setattr("src.settings.get_setting",
+                        lambda k, d=None: None)  # falls back to ["[Board] "]
+    assert ts._is_priority_task("[Board] talk to Ray") is True
+    assert ts._is_priority_task("Daily digest") is False
+
+    prefixes = ["[Board] ", "Nightly insight agent", "Nightly question agent"]
+    monkeypatch.setattr(
+        "src.settings.get_setting",
+        lambda k, d=None: prefixes if k == "user_priority_task_prefixes" else d)
+    # Em dash + date suffix, exactly as even-odysseus names them.
+    assert ts._is_priority_task("Nightly insight agent — 2026-08-24") is True
+    assert ts._is_priority_task("Nightly question agent — 2026-08-24") is True
+    assert ts._is_priority_task("[Board] find a clip") is True
+    assert ts._is_priority_task("Weekly housekeeping") is False
+    assert ts._is_priority_task(None) is False
+
+
+def test_priority_predicate_survives_mangled_setting(monkeypatch):
+    from src import task_scheduler as ts
+    monkeypatch.setattr(
+        "src.settings.get_setting",
+        lambda k, d=None: [None, 42, ""] if k == "user_priority_task_prefixes" else d)
+    # Non-string/empty entries are ignored; nothing matches, nothing raises.
+    assert ts._is_priority_task("[Board] x") is False
+
+    def boom(k, d=None):
+        raise RuntimeError("settings unavailable")
+    monkeypatch.setattr("src.settings.get_setting", boom)
+    # Fallback keeps board handoffs protected.
+    assert ts._is_priority_task("[Board] x") is True
+    assert ts._is_priority_task("Nightly insight agent — 2026-01-01") is False
