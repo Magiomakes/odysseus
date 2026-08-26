@@ -47,6 +47,110 @@ def _browser_active_seconds() -> float:
         return 45.0
 
 
+def _capacity_setting(key: str, default):
+    """Settings-backed knobs for the capacity gate (env-free so the operator
+    can tune them from the UI). Falls back hard if settings are unavailable."""
+    try:
+        from src.settings import get_setting
+        return get_setting(key, default)
+    except Exception:
+        return default
+
+
+def system_under_load() -> bool:
+    """True when the machine itself lacks headroom — other processes included.
+
+    Load is the 1-min loadavg normalized per core; memory is psutil's
+    available bytes (loadavg-only when psutil is missing). Either threshold
+    set to 0 disables that check.
+    """
+    try:
+        max_load = float(_capacity_setting("task_capacity_max_load_per_core", 2.0))
+    except (TypeError, ValueError):
+        max_load = 2.0
+    if max_load > 0:
+        try:
+            if os.getloadavg()[0] / max(1, os.cpu_count() or 1) > max_load:
+                return True
+        except OSError:
+            pass
+    try:
+        min_free_mb = int(_capacity_setting("task_capacity_min_free_mem_mb", 2048))
+    except (TypeError, ValueError):
+        min_free_mb = 2048
+    if min_free_mb > 0:
+        try:
+            import psutil
+            if psutil.virtual_memory().available < min_free_mb * 1024 * 1024:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+# even-odysseus live-session signal, cached so gate polls don't hammer the
+# brain service. {"t": monotonic-of-last-probe, "busy": last-answer}.
+_PIPELINE_CACHE = {"t": 0.0, "busy": False}
+_PIPELINE_CACHE_SECONDS = 5.0
+
+
+async def external_pipeline_busy() -> bool:
+    """True while a worn session is recording or its whisper/Gemma
+    post-processing is in flight (even-odysseus ingest /health `busy`).
+
+    This is the HARD tier of the capacity gate: a live session always wins
+    and no max-wait ever overrides it. The brain being down or unreachable
+    means not busy — never block on an absent service.
+    """
+    now = time.monotonic()
+    if now - _PIPELINE_CACHE["t"] < _PIPELINE_CACHE_SECONDS:
+        return _PIPELINE_CACHE["busy"]
+    base = (os.environ.get("BRIDGE_BASE_URL") or "http://127.0.0.1:8765").rstrip("/")
+    busy = False
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=0.5) as client:
+            resp = await client.get(f"{base}/health")
+            busy = bool(resp.json().get("busy"))
+    except Exception:
+        busy = False
+    _PIPELINE_CACHE["t"] = now
+    _PIPELINE_CACHE["busy"] = busy
+    return busy
+
+
+async def wait_for_capacity(label: str = "", max_wait: float = 600.0) -> bool:
+    """Gate for explicit user tasks (board handoffs): start when the machine
+    has headroom, not when the UI is untouched.
+
+    Tiered blockers:
+    - HARD (max_wait never applies): external_pipeline_busy() — a live
+      even-odysseus session or its post-processing owns the machine.
+    - SOFT (max_wait can override): an active chat/agent stream, or
+      system_under_load(). The soft budget only burns while not hard-blocked.
+
+    UI presence (in-flight requests, browser heartbeat) deliberately does NOT
+    block here: an open-but-idle tab is not competition for compute.
+    Returns True if the caller had to wait at all.
+    """
+    if not _enabled():
+        return False
+    waited = False
+    soft_budget = max_wait if max_wait and max_wait > 0 else None
+    poll = 1.0
+    while True:
+        hard = await external_pipeline_busy()
+        if not hard:
+            if not (_has_active_chat_stream() or system_under_load()):
+                return waited
+            if soft_budget is not None:
+                soft_budget -= poll
+                if soft_budget <= 0:
+                    return waited
+        waited = True
+        await asyncio.sleep(poll)
+
+
 def _condition() -> asyncio.Condition:
     global _COND, _COND_LOOP
     try:
@@ -186,17 +290,23 @@ async def track_interactive_request(path: str = "", method: str = ""):
             cond.notify_all()
 
 
-async def wait_for_interactive_quiet(label: str = "") -> bool:
+async def wait_for_interactive_quiet(label: str = "",
+                                     max_wait_override: float | None = None) -> bool:
     """Wait until foreground requests have stopped for the configured window.
 
     Returns True if the caller had to wait at all. The label is intentionally
     only for future logging/debugging so callers can keep their code simple.
+    max_wait_override (seconds; 0 = wait forever) replaces the
+    BACKGROUND_TASK_MAX_WAIT_SECONDS env default — on expiry the wait simply
+    returns, so callers that must not run while the world is busy should
+    re-check has_foreground_activity()/external_pipeline_busy() and defer.
     """
     if not _enabled():
         return False
 
     quiet = _quiet_seconds()
-    max_wait = _max_wait_seconds()
+    max_wait = (_max_wait_seconds() if max_wait_override is None
+                else max(0.0, float(max_wait_override)))
     deadline = time.monotonic() + max_wait if max_wait > 0 else None
     cond = _condition()
     waited = False

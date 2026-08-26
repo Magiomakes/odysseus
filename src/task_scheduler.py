@@ -847,13 +847,45 @@ class TaskScheduler:
                 db.commit()
                 return
 
+            is_board_task = (task.name or "").startswith("[Board] ")
             if gate_foreground:
                 waiting = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                 if waiting and waiting.status == "queued":
-                    waiting.result = "Queued — waiting for Odysseus to be idle…"
+                    waiting.result = ("Queued — waiting for machine headroom…"
+                                      if is_board_task else
+                                      "Queued — waiting for Odysseus to be idle…")
                     db.commit()
-                from src.interactive_gate import wait_for_interactive_quiet
-                await wait_for_interactive_quiet(f"scheduled task {task.name}")
+                from src.interactive_gate import (
+                    external_pipeline_busy, has_foreground_activity,
+                    wait_for_capacity, wait_for_interactive_quiet)
+                from src.settings import get_setting
+                if is_board_task:
+                    # Explicit user request: start on machine headroom (load /
+                    # chat stream / live-session hard block), not UI quiet —
+                    # an open-but-idle tab used to park these forever.
+                    await wait_for_capacity(
+                        f"board task {task.name}",
+                        max_wait=float(get_setting(
+                            "board_task_max_idle_wait_seconds", 600)))
+                else:
+                    await wait_for_interactive_quiet(
+                        f"scheduled task {task.name}",
+                        max_wait_override=float(get_setting(
+                            "background_task_gate_timeout_seconds", 600)))
+                    if has_foreground_activity() or await external_pipeline_busy():
+                        # Cap expired with the machine still busy. Housekeeping
+                        # must never start on a timer — especially not while a
+                        # live worn session owns the machine — so defer and
+                        # release the slot instead of starting anyway.
+                        stale = db.query(TaskRun).filter(TaskRun.id == run_id).first()
+                        if stale:
+                            db.delete(stale)
+                        task.next_run = _utcnow() + timedelta(minutes=15)
+                        db.commit()
+                        logger.info(
+                            "Task '%s' deferred 15m: gate cap expired while busy",
+                            task.name)
+                        return
 
             # Flip the run from queued → running. Reset started_at to the
             # actual execution start so queue wait time is visible from
@@ -887,7 +919,10 @@ class TaskScheduler:
             self._last_run_model = None
             foreground_cancel = {"hit": False}
             foreground_monitor = None
-            if gate_foreground:
+            # Board handoffs run to completion once started (same contract as
+            # the stop_background_tasks_for_foreground exemption): the operator
+            # watching the UI must not kill their own explicit request.
+            if gate_foreground and not is_board_task:
                 current_task = asyncio.current_task()
 
                 async def _cancel_if_foreground_active():
@@ -1891,8 +1926,15 @@ class TaskScheduler:
         # behind the primary endpoint so a downed primary won't silently yield
         # `(no output)`.
         try:
-            from src.interactive_gate import wait_for_interactive_quiet
-            await wait_for_interactive_quiet(f"agent task {task.name}")
+            # Board handoffs already passed the capacity gate at start; the
+            # quiet re-gate here would park them again behind UI presence.
+            if not (task.name or "").startswith("[Board] "):
+                from src.interactive_gate import wait_for_interactive_quiet
+                from src.settings import get_setting as _get_setting
+                await wait_for_interactive_quiet(
+                    f"agent task {task.name}",
+                    max_wait_override=float(_get_setting(
+                        "background_task_gate_timeout_seconds", 600)))
             from src.task_endpoint import resolve_task_candidates
             _task_fallbacks = resolve_task_candidates(
                 fallback_url=endpoint_url,

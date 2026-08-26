@@ -134,6 +134,21 @@ DEFAULT_SETTINGS = {
     "tool_path_extra_roots": [],
     "task_endpoint_id": "",
     "task_model": "",
+    # Capacity gate for explicit user tasks (board handoffs). They start once
+    # the machine has headroom — an open-but-idle tab no longer blocks them.
+    # Max idle wait is a ceiling on the SOFT blockers (chat stream, machine
+    # load) only; a live even-odysseus session (ingest /health busy) is a hard
+    # block that no timer overrides. 0 = wait for full headroom indefinitely.
+    "board_task_max_idle_wait_seconds": 600,
+    # Housekeeping keeps the strict quiet gate, but bounded: when the cap
+    # expires with the machine still busy the run defers (+15 min) instead of
+    # waiting forever inside the model slot and starving everything behind it.
+    # 0 = old behavior (wait forever).
+    "background_task_gate_timeout_seconds": 600,
+    # system_under_load() thresholds: 1-min loadavg per core, and minimum
+    # available memory (psutil). Either set to 0 disables that check.
+    "task_capacity_max_load_per_core": 2.0,
+    "task_capacity_min_free_mem_mb": 2048,
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.
