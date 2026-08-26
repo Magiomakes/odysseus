@@ -1,0 +1,275 @@
+/* ============================================
+   Morning Brief — the self-model loop's daily surface.
+   Terminal aesthetic extending the host tokens, same discipline as
+   board.css / bridge.css. Boldness is spent in exactly one place: the
+   masthead (big thin date + tabular counts + the question-budget ticks).
+   Accent budget: primary action buttons and focus-visible outlines ONLY.
+   ============================================ */
+
+/* Stock floating-window shell (same recipe as bridge.css). */
+.brief-modal-content {
+  width: min(680px, 92vw);
+  height: min(760px, 88vh);
+  max-height: 88vh;
+  padding: 0;
+  overflow: hidden;
+}
+.brief-modal-content .modal-header {
+  padding: 8px 12px 6px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.brief-modal-content .modal-header h4 {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.brief-auto-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  margin-right: 8px;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.brief-auto-toggle:hover { color: var(--fg); }
+.brief-auto-toggle:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+.brief-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+@media (max-width: 768px) {
+  #brief-modal .brief-modal-content {
+    width: 100% !important;
+    max-height: 100vh !important;
+    max-height: 100dvh !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+  }
+}
+
+#brief-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-family, 'Fira Code', monospace);
+  padding: 0 24px 32px;
+}
+
+/* ── Masthead — the signature element ── */
+.brief-masthead {
+  padding: 22px 0 14px;
+  border-bottom: 1px solid var(--fg);
+  margin-bottom: 6px;
+}
+.brief-date {
+  font-size: 26px;
+  font-weight: 200;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+}
+.brief-counts {
+  display: flex;
+  gap: 18px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Sections ── */
+.brief-sec { padding: 14px 0 4px; }
+.brief-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  padding-bottom: 8px;
+}
+.brief-sub {
+  font-size: 11px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-muted);
+}
+
+/* Question budget meter (masthead-adjacent signature detail) */
+.brief-meter { display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; }
+.brief-tick {
+  width: 10px;
+  height: 4px;
+  background: var(--border);
+  display: inline-block;
+}
+.brief-tick.on { background: var(--fg); }
+.brief-meter-n {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 300;
+}
+
+/* ── Question cards ── */
+.brief-q {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+.brief-q-thread {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  margin-bottom: 4px;
+}
+.brief-chip {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0 4px;
+  font-size: 9px;
+}
+.brief-q-text { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.brief-q-answer textarea {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 2px 0 6px;
+  transition: border-color 150ms ease-out;
+}
+.brief-q-answer textarea:focus {
+  outline: none;
+  border-bottom-color: var(--accent, var(--color-accent));
+}
+.brief-q-actions, .brief-i-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── Insight cards ── */
+.brief-insight {
+  border: 1px solid var(--border);
+  border-left: 2px solid color-mix(in srgb, var(--fg) 40%, var(--border));
+  border-radius: 2px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+.brief-i-text { font-size: 13px; line-height: 1.5; }
+.brief-conf {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Resolved cards collapse gracefully before the refresh repaints. */
+.brief-done { opacity: 0.25; transform: translateY(-2px); pointer-events: none; }
+
+/* ── Buttons ── */
+.brief-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 150ms ease-out, color 150ms ease-out,
+              background-color 150ms ease-out;
+}
+.brief-btn:hover { border-color: color-mix(in srgb, var(--fg) 45%, var(--border)); }
+.brief-btn:active { transform: translateY(1px); }
+.brief-btn:disabled { opacity: 0.4; cursor: default; }
+.brief-btn:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+.brief-btn-primary {
+  border-color: var(--accent, var(--color-accent));
+  color: var(--accent, var(--color-accent));
+}
+.brief-btn-primary:hover {
+  background: color-mix(in srgb, var(--accent, var(--color-accent)) 12%, transparent);
+  border-color: var(--accent, var(--color-accent));
+}
+.brief-btn-quiet { color: var(--color-muted); }
+.brief-btn-quiet:hover { color: var(--fg); }
+
+/* ── Yesterday narrative ── */
+.brief-narrative { font-size: 13px; line-height: 1.6; max-width: 58ch; }
+.brief-narrative p { margin: 6px 0; }
+
+/* ── Today rows ── */
+.brief-t-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 2px;
+  font-size: 13px;
+}
+.brief-t-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brief-t-chan { font-size: 10px; color: var(--color-muted); white-space: nowrap; }
+.brief-open-board { margin-top: 10px; }
+
+.brief-empty {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 300;
+  padding: 10px 0 14px;
+}
+
+/* ── The one orchestrated moment: first-paint stagger ── */
+.brief-enter .brief-masthead,
+.brief-enter .brief-sec {
+  animation: brief-in 220ms ease-out both;
+}
+.brief-enter .brief-sec:nth-of-type(2) { animation-delay: 50ms; }
+.brief-enter .brief-sec:nth-of-type(3) { animation-delay: 100ms; }
+.brief-enter .brief-sec:nth-of-type(4) { animation-delay: 150ms; }
+.brief-enter .brief-sec:nth-of-type(5) { animation-delay: 200ms; }
+@keyframes brief-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-enter .brief-masthead,
+  .brief-enter .brief-sec { animation-duration: 80ms; animation-delay: 0ms; }
+  .brief-q, .brief-insight, .brief-btn { transition-duration: 0ms; }
+}
