@@ -913,7 +913,7 @@ function _renderDetail(t) {
       <label>est</label><input type="text" class="bd-est" placeholder="1:30" value="${_fmtEst(t.estimate_minutes)}" style="width:52px">
       <label>horizon</label><select class="bd-horizon">${horizonOpts}</select>
       ${sourceLink}
-      <span style="margin-left:auto">${_esc(t.status.replace('_', ' '))}${t.source !== 'manual' ? ` · ${_esc(t.source)}` : ''}${t.bucket ? ` · ${_esc(t.bucket)}` : ''}${t.draft_saved ? ' · in Drafts' : ''}</span>
+      <span style="margin-left:auto">${_esc(t.status.replace('_', ' '))}${t.source !== 'manual' ? ` · ${_esc(t.source)}` : ''}${t.bucket ? ` · ${_esc(t.bucket)}` : ''}${t.draft_saved ? ' · in Drafts' : (t.bucket === 'email-draft' && t.run_status === 'success' && t.result ? ' · draft not in Drafts yet' : '')}</span>
     </div>
     ${resultBlock}
     <div class="board-detail-actions"></div>`;

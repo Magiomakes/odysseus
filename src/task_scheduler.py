@@ -397,18 +397,23 @@ class TaskScheduler:
             logger.debug("Task abort marker failed for %s", task_id, exc_info=True)
             return False
 
-    def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None):
+    def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None,
+                         session_id: str = None, document_id: str = None):
         """Store a notification about a completed task run. Tagged with the
         task's owner so `pop_notifications` can return only that user's
         notifications and prevent cross-tenant drain. `body` is the result
         text — populated when output_target='notification' so the client can
-        show a rich browser Notification, not just a toast."""
+        show a rich browser Notification, not just a toast. `session_id` /
+        `document_id` let the client offer a click-through to where the
+        result actually lives."""
         self._pending_notifications.append({
             "task_name": task_name,
             "status": status,
             "task_id": task_id,
             "owner": owner,
             "body": (body[:500] + "…") if body and len(body) > 500 else body,
+            "session_id": session_id,
+            "document_id": document_id,
             "timestamp": _utcnow().isoformat() + "Z",
         })
         # Cap at 50 to avoid unbounded growth
@@ -915,8 +920,10 @@ class TaskScheduler:
 
             # Cleared each run so an action task (no model) doesn't inherit a
             # previous llm/research run's model. The executors set it once the
-            # model is resolved.
+            # model is resolved. Same for the delivered-document id (set by
+            # _deliver_via_document, read by the completion notification).
             self._last_run_model = None
+            self._last_document_id = None
             foreground_cancel = {"hit": False}
             foreground_monitor = None
             # Board handoffs run to completion once started (same contract as
@@ -1077,6 +1084,8 @@ class TaskScheduler:
                     task_id,
                     owner=task.owner,
                     body=run.result if output == "notification" else None,
+                    session_id=task.session_id,
+                    document_id=getattr(self, "_last_document_id", None),
                 )
             elif run.status == "error":
                 self.add_notification(
@@ -1719,6 +1728,10 @@ class TaskScheduler:
             await self._deliver_via_mcp(output, task, result)
             return
 
+        if output == "document":
+            await self._deliver_via_document(task, result)
+            return
+
         if self._is_email_output_target(output):
             await self._deliver_via_email(output, task, result)
             return
@@ -1830,6 +1843,22 @@ class TaskScheduler:
         if target.startswith("email:"):
             return True
         return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", target))
+
+    async def _deliver_via_document(self, task, result: str):
+        """output_target='document': materialize the result in the Documents
+        library so it's findable where the user already looks — not only as a
+        200-char preview buried in the task card."""
+        from src.document_actions import create_result_document
+        doc_id = await asyncio.to_thread(
+            create_result_document,
+            title=task.name,
+            content=result,
+            owner=task.owner or None,
+            summary=f"Result of task '{task.name}'",
+        )
+        if doc_id:
+            self._last_document_id = doc_id
+            logger.info("Task %s result saved to Documents (%s)", task.id, doc_id)
 
     async def _deliver_via_email(self, output: str, task, result: str):
         """Send task output through the app's configured SMTP account.

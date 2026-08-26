@@ -550,3 +550,70 @@ def test_parse_draft_headers_and_fallbacks():
 
     to2, subj2, body2 = board_routes._parse_draft("Just a bare body.", "Card title")
     assert to2 is None and subj2 == "Card title" and body2 == "Just a bare body."
+
+
+def test_reconcile_research_result_creates_document(monkeypatch):
+    """A successful research handoff materializes its result in the Documents
+    library at the in_review flip (ADR-0015 discoverability)."""
+    created = []
+    import src.document_actions as da
+    monkeypatch.setattr(da, "create_result_document",
+                        lambda **kw: (created.append(kw), "doc-1")[1])
+
+    router, _ = _router()
+    create = _endpoint(router, "POST", "/api/board/tasks")
+    handoff = _endpoint(router, "POST", "/api/board/tasks/{card_id}/handoff")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    card = _run(create(_req(), board_routes.CardCreate(title="Research Y")))
+    out = _run(handoff(_req(), card["id"], board_routes.HandoffRequest(task_type="research")))
+
+    from datetime import datetime
+    db = _TS()
+    try:
+        db.add(TaskRun(id="run-doc", task_id=out["scheduled_task_id"],
+                       started_at=datetime(2026, 8, 25, 12, 0),
+                       finished_at=datetime(2026, 8, 25, 12, 5),
+                       status="success", result="Deep findings"))
+        db.commit()
+    finally:
+        db.close()
+
+    got = _run(listing(_req()))
+    c = next(t for t in got["tasks"] if t["id"] == card["id"])
+    assert c["status"] == "in_review"
+    assert len(created) == 1
+    assert created[0]["title"] == "Research Y"
+    assert created[0]["content"] == "Deep findings"
+    assert created[0]["owner"] == "alice"
+
+
+def test_reconcile_llm_result_does_not_create_document(monkeypatch):
+    created = []
+    import src.document_actions as da
+    monkeypatch.setattr(da, "create_result_document",
+                        lambda **kw: (created.append(kw), "doc-2")[1])
+
+    router, _ = _router()
+    create = _endpoint(router, "POST", "/api/board/tasks")
+    handoff = _endpoint(router, "POST", "/api/board/tasks/{card_id}/handoff")
+    listing = _endpoint(router, "GET", "/api/board/tasks")
+
+    card = _run(create(_req(), board_routes.CardCreate(title="Write a note")))
+    out = _run(handoff(_req(), card["id"], board_routes.HandoffRequest(task_type="llm")))
+
+    from datetime import datetime
+    db = _TS()
+    try:
+        db.add(TaskRun(id="run-llm", task_id=out["scheduled_task_id"],
+                       started_at=datetime(2026, 8, 25, 12, 0),
+                       finished_at=datetime(2026, 8, 25, 12, 5),
+                       status="success", result="Note text"))
+        db.commit()
+    finally:
+        db.close()
+
+    got = _run(listing(_req()))
+    c = next(t for t in got["tasks"] if t["id"] == card["id"])
+    assert c["status"] == "in_review"
+    assert created == []

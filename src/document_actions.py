@@ -11,6 +11,52 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 
+def create_result_document(*, title: str, content: str, owner=None,
+                           session_id=None,
+                           summary: str = "Created from a task result"):
+    """Materialize an agent/task result as a library document (+ version 1).
+
+    Returns the new document id, or None on failure — best-effort by design:
+    result delivery must never fail because the library write did.
+    """
+    import uuid
+
+    from core.database import Document, DocumentVersion, SessionLocal
+    doc_id = str(uuid.uuid4())
+    db = SessionLocal()
+    try:
+        db.add(Document(
+            id=doc_id,
+            session_id=session_id,
+            title=(title or "Task result").strip()[:200] or "Task result",
+            language="markdown",
+            current_content=content or "",
+            version_count=1,
+            is_active=True,
+            owner=owner,
+        ))
+        db.add(DocumentVersion(
+            id=str(uuid.uuid4()),
+            document_id=doc_id,
+            version_number=1,
+            content=content or "",
+            summary=summary,
+            source="ai",
+        ))
+        db.commit()
+    except Exception:
+        logger.warning("Result document create failed for %r", title, exc_info=True)
+        return None
+    finally:
+        db.close()
+    try:
+        from src.event_bus import fire_event
+        fire_event("document_created", owner)
+    except Exception:
+        logger.debug("document_created event dispatch failed", exc_info=True)
+    return doc_id
+
+
 _JUNK_TITLES = {
     "untitled", "untitled document", "new document", "document",
     "new email", "new mail", "new message", "reply", "fwd", "re:",
