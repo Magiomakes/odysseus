@@ -365,8 +365,31 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 q = q.filter(ScheduledTask.owner == user)
             if status:
                 q = q.filter(ScheduledTask.status == status)
+            else:
+                # Auto-archived finished one-offs stay out of the default
+                # list; ask for them explicitly with ?status=archived.
+                q = q.filter(ScheduledTask.status != "archived")
             tasks = q.order_by(ScheduledTask.created_at.desc()).all()
             return {"tasks": [_task_to_dict(t, include_last_run_result=include_last_run) for t in tasks]}
+        finally:
+            db.close()
+
+    @router.post("/archive-finished")
+    async def archive_finished(request: Request):
+        """Archive all completed one-off tasks now (the 'Clear finished'
+        button) — a status flip; run history is kept."""
+        user = _owner(request)
+        db = SessionLocal()
+        try:
+            q = db.query(ScheduledTask).filter(
+                ScheduledTask.status == "completed",
+                ScheduledTask.schedule == "once",
+            )
+            if user:
+                q = q.filter(ScheduledTask.owner == user)
+            n = q.update({"status": "archived"}, synchronize_session=False)
+            db.commit()
+            return {"archived": n}
         finally:
             db.close()
 
