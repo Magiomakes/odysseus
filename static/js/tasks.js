@@ -39,9 +39,12 @@ function _setTaskCompletionPending(active) {
 
 // ---- API ----
 
+let _showingArchived = false;   // Tasks-list view: current vs auto-archived
+
 async function _fetchTasks() {
   try {
-    const res = await fetch(`${API_BASE}/api/tasks`, { credentials: 'same-origin' });
+    const url = `${API_BASE}/api/tasks${_showingArchived ? '?status=archived' : ''}`;
+    const res = await fetch(url, { credentials: 'same-origin' });
     const data = await res.json();
     _tasks = data.tasks || [];
   } catch (e) {
@@ -770,7 +773,9 @@ function _renderTaskChips() {
   });
   if (_taskFilter && !counts[_taskFilter]) _taskFilter = null;
   bar.innerHTML = '';
-  bar.style.display = cats.length > 1 ? 'flex' : 'none';
+  const finishedN = _showingArchived ? 0
+    : _tasks.filter(t => t.status === 'completed' && t.schedule === 'once').length;
+  bar.style.display = (cats.length > 1 || _showingArchived || finishedN) ? 'flex' : 'none';
   // Exact library style: .memory-cat-chip, an "all (N)" chip, then one per
   // category with its count. Clicking "all" clears the filter.
   const mkChip = (label, value, active) => {
@@ -780,8 +785,38 @@ function _renderTaskChips() {
     b.addEventListener('click', () => { _taskFilter = value; _renderList(); });
     bar.appendChild(b);
   };
-  mkChip(`all (${_tasks.length})`, null, !_taskFilter);
+  mkChip(`all (${_tasks.length})`, null, !_taskFilter && !_showingArchived);
   for (const c of cats) mkChip(`${c} (${counts[c]})`, c, _taskFilter === c);
+  // Auto-archived finished one-offs live behind this chip (server-side
+  // sweep, task_archive_completed_days). Toggling refetches the list.
+  const arch = document.createElement('button');
+  arch.className = 'memory-cat-chip' + (_showingArchived ? ' active' : '');
+  arch.textContent = 'archived';
+  arch.addEventListener('click', async () => {
+    _showingArchived = !_showingArchived;
+    _taskFilter = null;
+    await _fetchTasks();
+    _renderList();
+  });
+  bar.appendChild(arch);
+  // One-click sweep of everything already finished — archive, never delete.
+  if (finishedN) {
+    const clear = document.createElement('button');
+    clear.className = 'memory-cat-chip';
+    clear.textContent = `clear finished (${finishedN})`;
+    clear.title = 'Archive all completed one-off tasks (run history kept)';
+    clear.addEventListener('click', async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/tasks/archive-finished`,
+          { method: 'POST', credentials: 'same-origin' });
+        const data = await res.json();
+        if (uiModule) uiModule.showToast(`Archived ${data.archived || 0} finished task${data.archived === 1 ? '' : 's'}`);
+      } catch (_) { /* refetch below shows the truth either way */ }
+      await _fetchTasks();
+      _renderList();
+    });
+    bar.appendChild(clear);
+  }
 }
 
 const _TASK_CACHE_LABELS = {
@@ -851,6 +886,7 @@ function _renderList() {
     const card = document.createElement('div');
     card.className = 'memory-item task-card' + (task.status === 'paused' ? ' task-paused' : '');
     card.dataset.id = task.id;
+    if (task.status === 'archived') card.style.opacity = '0.65';
 
     // Title row: icon + name (left); status pill + chevron/actions (right).
     // The status pill replaces the old dot and doubles as pause/resume.

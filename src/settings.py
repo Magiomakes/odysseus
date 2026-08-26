@@ -132,6 +132,10 @@ DEFAULT_SETTINGS = {
     "tool_path_extra_roots": [],
     "task_endpoint_id": "",
     "task_model": "",
+    # Finished one-off tasks auto-archive this many days after completion
+    # (status flip only — runs history kept, still deletable, visible under
+    # the Tasks tab's 'archived' chip). -1 disables the sweep.
+    "task_archive_completed_days": 3,
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.
