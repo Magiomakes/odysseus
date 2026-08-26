@@ -23,6 +23,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _is_priority_task(name: str | None) -> bool:
+    """User-priority tasks — board handoffs and the even-odysseus nightly
+    self-model agents — take the capacity gate instead of the housekeeping
+    quiet gate, dispatch despite UI presence, and are never cancelled by
+    foreground activity once running. Prefixes are settings-driven
+    (`user_priority_task_prefixes`) so new agent families can opt in without
+    code changes; the fallback keeps board handoffs protected even if the
+    setting is mangled."""
+    try:
+        from src.settings import get_setting
+        prefixes = get_setting("user_priority_task_prefixes", None) or ["[Board] "]
+    except Exception:
+        prefixes = ["[Board] "]
+    n = name or ""
+    return any(n.startswith(p) for p in prefixes if isinstance(p, str) and p)
+
+
 # Shell/file tools a scheduled task's agent should be offered by default,
 # mirroring the chat agent (where these are on unless a privilege or global
 # setting turns them off). The RAG tool selector + ASSISTANT_ALWAYS_AVAILABLE
@@ -715,7 +732,11 @@ class TaskScheduler:
                 for task in due:
                     if task.id in self._executing:
                         continue
-                    if foreground_active:
+                    # User-priority tasks dispatch regardless of UI presence —
+                    # the capacity gate paces them; deferring here re-stranded
+                    # re-armed handoffs +15m forever while a tab was open, and
+                    # parked the nightly self-model agents every night.
+                    if foreground_active and not _is_priority_task(task.name):
                         task.next_run = now + timedelta(minutes=15)
                         continue
                     self._executing.add(task.id)
@@ -852,24 +873,25 @@ class TaskScheduler:
                 db.commit()
                 return
 
-            is_board_task = (task.name or "").startswith("[Board] ")
+            is_priority_task = _is_priority_task(task.name)
             if gate_foreground:
                 waiting = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                 if waiting and waiting.status == "queued":
                     waiting.result = ("Queued — waiting for machine headroom…"
-                                      if is_board_task else
+                                      if is_priority_task else
                                       "Queued — waiting for Odysseus to be idle…")
                     db.commit()
                 from src.interactive_gate import (
                     external_pipeline_busy, has_foreground_activity,
                     wait_for_capacity, wait_for_interactive_quiet)
                 from src.settings import get_setting
-                if is_board_task:
-                    # Explicit user request: start on machine headroom (load /
-                    # chat stream / live-session hard block), not UI quiet —
-                    # an open-but-idle tab used to park these forever.
+                if is_priority_task:
+                    # Explicit user request / user-facing agent: start on
+                    # machine headroom (load / chat stream / live-session hard
+                    # block), not UI quiet — an open-but-idle tab used to park
+                    # these forever.
                     await wait_for_capacity(
-                        f"board task {task.name}",
+                        f"priority task {task.name}",
                         max_wait=float(get_setting(
                             "board_task_max_idle_wait_seconds", 600)))
                 else:
@@ -926,10 +948,11 @@ class TaskScheduler:
             self._last_document_id = None
             foreground_cancel = {"hit": False}
             foreground_monitor = None
-            # Board handoffs run to completion once started (same contract as
+            # Priority tasks run to completion once started (same contract as
             # the stop_background_tasks_for_foreground exemption): the operator
-            # watching the UI must not kill their own explicit request.
-            if gate_foreground and not is_board_task:
+            # watching the UI must not kill their own explicit request, and an
+            # overnight heartbeat must not kill the nightly self-model agents.
+            if gate_foreground and not is_priority_task:
                 current_task = asyncio.current_task()
 
                 async def _cancel_if_foreground_active():
@@ -1955,9 +1978,9 @@ class TaskScheduler:
         # behind the primary endpoint so a downed primary won't silently yield
         # `(no output)`.
         try:
-            # Board handoffs already passed the capacity gate at start; the
+            # Priority tasks already passed the capacity gate at start; the
             # quiet re-gate here would park them again behind UI presence.
-            if not (task.name or "").startswith("[Board] "):
+            if not _is_priority_task(task.name):
                 from src.interactive_gate import wait_for_interactive_quiet
                 from src.settings import get_setting as _get_setting
                 await wait_for_interactive_quiet(
@@ -2321,14 +2344,14 @@ class TaskScheduler:
         """
         async with self._executing_lock:
             task_ids = list(self._executing)
-        # Board handoffs ("[Board] …", routes/board_routes.py) are EXPLICIT user
-        # requests being watched from the My Tasks board — not deferrable
-        # housekeeping. Cancelling them on foreground activity meant the very
-        # act of watching the board (heartbeat, notes/badge timer polls) killed
-        # the worker, and after MAX_ABORT_RETRIES the card failed as "Stopped
-        # by user" with nobody at the keyboard. They still respect the model
-        # slot and the interactive-quiet wait before STARTING; once running,
-        # they get to finish.
+        # User-priority tasks (`user_priority_task_prefixes`: board handoffs
+        # being watched from the My Tasks board, the even-odysseus nightly
+        # self-model agents) are NOT deferrable housekeeping. Cancelling them
+        # on foreground activity meant the very act of watching the board
+        # (heartbeat, notes/badge timer polls) killed the worker — and an idle
+        # overnight tab killed every nightly agent for a month. They still
+        # respect the model slot and the capacity gate before STARTING; once
+        # running, they get to finish.
         protected: set = set()
         if task_ids:
             from core.database import SessionLocal, ScheduledTask
@@ -2337,9 +2360,9 @@ class TaskScheduler:
                 rows = db.query(ScheduledTask.id, ScheduledTask.name).filter(
                     ScheduledTask.id.in_(task_ids)).all()
                 protected = {tid for tid, name in rows
-                             if (name or "").startswith("[Board] ")}
+                             if _is_priority_task(name)}
             except Exception:
-                logger.debug("board-task protection lookup failed", exc_info=True)
+                logger.debug("priority-task protection lookup failed", exc_info=True)
             finally:
                 db.close()
         stopped = 0

@@ -147,6 +147,15 @@ DEFAULT_SETTINGS = {
     # available memory (psutil). Either set to 0 disables that check.
     "task_capacity_max_load_per_core": 2.0,
     "task_capacity_min_free_mem_mb": 2048,
+    # Task-name prefixes treated as USER-PRIORITY: explicit user requests and
+    # user-facing agents (board handoffs; the even-odysseus nightly self-model
+    # agents). They dispatch even while a browser tab is present, start on
+    # machine headroom via the capacity gate (the live worn-session hard block
+    # still applies), and a RUNNING one is never cancelled by foreground
+    # activity. Everything else keeps housekeeping semantics: quiet gate,
+    # defer on activity. Match is a simple name startswith() on any entry.
+    "user_priority_task_prefixes": [
+        "[Board] ", "Nightly insight agent", "Nightly question agent"],
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.
