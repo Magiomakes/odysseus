@@ -738,6 +738,10 @@ from routes.stt_routes import setup_stt_routes
 app.include_router(setup_stt_routes(stt_service))
 logger.info("STT service initialized (provider managed via settings)")
 
+# Morning Brief (even-odysseus self-model daily surface: report + insights + questions)
+from routes.brief_routes import setup_brief_routes
+app.include_router(setup_brief_routes())
+
 # Documents (artifacts/canvas)
 from routes.document_routes import setup_document_routes
 document_router = setup_document_routes(session_manager, upload_handler)
