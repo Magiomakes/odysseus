@@ -20,6 +20,8 @@
 import { showToast } from './ui.js';
 import * as Modals from './modalManager.js';
 import { makeWindowDraggable } from './windowDrag.js';
+import sessionModule from './sessions.js';
+import fileHandlerModule from './fileHandler.js';
 
 const API = window.location.origin;
 const MODAL_ID = 'bridge-modal';
@@ -143,6 +145,7 @@ async function _renderDetail(body) {
     <div class="bridge-dtitle">${_esc(meta.title || d.id)}</div>
     <div class="bridge-dmeta">${_esc(_when(meta.started))}${meta.duration_s ? ` · ${_dur(meta.duration_s)}` : ''}${meta.extract_error ? ' · ⚠ extraction failed — transcript only' : ''}</div>
     ${d.has_audio ? `<audio class="bridge-audio" controls preload="none" src="/api/bridge/sessions/${encodeURIComponent(d.id)}/audio"></audio>` : ''}
+    <button class="bridge-askai" type="button">Ask AI about this session</button>
     <div class="bridge-session-tasks"></div>
     <div class="bridge-record">${_md(d.record) || '<p class="bridge-empty">No record.</p>'}</div>
     <details class="bridge-transcript"><summary>Transcript</summary><pre>${_esc(d.transcript || '')}</pre></details>`;
@@ -150,9 +153,55 @@ async function _renderDetail(body) {
     _detailId = null;
     _renderSessions();
   });
+  wrap.querySelector('.bridge-askai').addEventListener('click', () => _askAI(d));
   body.innerHTML = '';
   body.appendChild(wrap);
   _renderSessionTasks(wrap.querySelector('.bridge-session-tasks'), d.id);
+}
+
+// "Ask AI about this session" (PLAN-captures-context Phase 3): open a fresh
+// direct chat with the session RECORD attached as a markdown file and the
+// composer prefilled — never auto-sent, the operator stays in charge of the
+// first message. Same flow as the gallery's "discuss this photo". The record
+// travels WITHOUT its embedded `## Transcript` section (it duplicates the
+// transcript at ~2× the size); the prefill names the session id so the
+// captures MCP tools can pull the transcript on demand once the model wants it.
+function _recordSansTranscript(record) {
+  const lines = (record || '').split('\n');
+  const out = [];
+  let skipping = false;
+  for (const ln of lines) {
+    if (ln.trim().toLowerCase() === '## transcript') { skipping = true; continue; }
+    if (skipping && ln.startsWith('## ')) skipping = false;
+    if (!skipping) out.push(ln);
+  }
+  return out.join('\n').trim();
+}
+
+async function _askAI(d) {
+  const meta = d.meta || {};
+  try {
+    const dcRes = await fetch('/api/default-chat', { credentials: 'same-origin' });
+    const dc = await dcRes.json();
+    if (!dc?.endpoint_url || !dc?.model) {
+      showToast('Pick a chat model first');
+      return;
+    }
+    sessionModule.createDirectChat(dc.endpoint_url, dc.model, dc.endpoint_id);
+    closeCaptures();
+    const record = _recordSansTranscript(d.record) || `(no record for ${d.id})`;
+    const file = new File([record], `${d.id}-record.md`, { type: 'text/markdown' });
+    fileHandlerModule.addFiles([file]);
+    const input = document.getElementById('message');
+    if (input) {
+      input.value = `Let's discuss this recording: "${meta.title || d.id}" (${d.id}).`;
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    }
+  } catch (e) {
+    console.error('Ask AI about session failed:', e);
+    showToast('Could not start session chat');
+  }
 }
 
 // Reverse link (ADR-0015 provenance both ways): tasks the pipeline created
