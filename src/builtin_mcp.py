@@ -104,6 +104,32 @@ def _spawn_bg(coro) -> asyncio.Task:
     return task
 
 
+def _memory_owner() -> str | None:
+    """Resolve the owner the built-in memory server should scope to.
+
+    The MCP stdio client replaces the child's environment rather than
+    merging, so ODYSSEUS_MCP_MEMORY_OWNER set in the parent never reached
+    the memory server — against an owner-scoped store every manage_memory
+    call then fails with a scope error. Explicit env wins; otherwise a
+    single-user install scopes to its sole account. Multi-user installs
+    with no explicit setting stay unscoped (the server refuses writes,
+    same as before, rather than guessing an owner).
+    """
+    for key in ("ODYSSEUS_MCP_MEMORY_OWNER", "ODYSSEUS_MEMORY_OWNER"):
+        owner = os.environ.get(key, "").strip()
+        if owner:
+            return owner
+    try:
+        from src.constants import AUTH_FILE
+        with open(AUTH_FILE, encoding="utf-8") as f:
+            users = list((json.load(f).get("users") or {}).keys())
+        if len(users) == 1:
+            return users[0]
+    except Exception:
+        logger.debug("Could not resolve memory owner from auth store", exc_info=True)
+    return None
+
+
 async def register_builtin_servers(mcp_manager):
     """Connect all built-in MCP servers to the manager."""
     if MCP_DISABLED:
@@ -115,13 +141,18 @@ async def register_builtin_servers(mcp_manager):
 
     async def _connect_python_server(server_id: str, script_path: str, name: str):
         try:
+            env = {"PYTHONPATH": base_dir}
+            if server_id == "memory":
+                owner = _memory_owner()
+                if owner:
+                    env["ODYSSEUS_MCP_MEMORY_OWNER"] = owner
             ok = await mcp_manager.connect_server(
                 server_id=server_id,
                 name=name,
                 transport="stdio",
                 command=python,
                 args=[script_path],
-                env={"PYTHONPATH": base_dir},
+                env=env,
             )
             if ok:
                 logger.info(f"Built-in MCP server registered: {name}")
