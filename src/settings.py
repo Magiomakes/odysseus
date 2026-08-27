@@ -165,6 +165,10 @@ DEFAULT_SETTINGS = {
     # defer on activity. Match is a simple name startswith() on any entry.
     "user_priority_task_prefixes": [
         "[Board] ", "Nightly insight agent", "Nightly question agent"],
+    # Finished one-off tasks auto-archive this many days after completion
+    # (status flip only — runs history kept, still deletable, visible under
+    # the Tasks tab's 'archived' chip). -1 disables the sweep.
+    "task_archive_completed_days": 3,
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.

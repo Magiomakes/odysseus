@@ -846,6 +846,10 @@ class TaskScheduler:
                 await self._check_due_tasks()
             except Exception:
                 logger.exception("Error in task scheduler loop")
+            try:
+                await self._archive_finished_sweep()
+            except Exception:
+                logger.debug("archive sweep failed", exc_info=True)
             # Sleep until the next scheduled run, capped at 60s. A `* * * * *`
             # cron task previously fired up to ~60s late because we always
             # slept the full minute; now the loop wakes near the boundary.
@@ -866,6 +870,37 @@ class TaskScheduler:
             except Exception:
                 pass
             await asyncio.sleep(sleep_for)
+
+    async def _archive_finished_sweep(self):
+        """Auto-archive finished one-off tasks so the Tasks tab doesn't fill
+        forever (operator default: 3 days after completion). A status flip
+        only — run history is kept; delete remains the one destructive path.
+        Hourly throttle; task_archive_completed_days < 0 disables the sweep,
+        0 archives on the next sweep after completion."""
+        if time.monotonic() - getattr(self, "_last_archive_sweep", 0.0) < 3600:
+            return
+        self._last_archive_sweep = time.monotonic()
+        from src.settings import get_setting
+        try:
+            days = int(get_setting("task_archive_completed_days", 3))
+        except (TypeError, ValueError):
+            days = 3
+        if days < 0:
+            return
+        from core.database import SessionLocal, ScheduledTask
+        cutoff = _utcnow() - timedelta(days=days)
+        db = SessionLocal()
+        try:
+            n = db.query(ScheduledTask).filter(
+                ScheduledTask.status == "completed",
+                ScheduledTask.schedule == "once",
+                ScheduledTask.updated_at < cutoff,
+            ).update({"status": "archived"}, synchronize_session=False)
+            if n:
+                db.commit()
+                logger.info("Archived %d finished one-off task(s)", n)
+        finally:
+            db.close()
 
     async def _check_due_tasks(self):
         from core.database import SessionLocal, ScheduledTask

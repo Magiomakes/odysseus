@@ -661,6 +661,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         }
         _FLOAT_RANGES = {
             "task_capacity_max_load_per_core": (0.0, 64.0),      # 0 = disabled
+            "task_archive_completed_days": (-1, 365),            # -1 = never
         }
         for key in DEFAULT_SETTINGS:
             if key not in body:
