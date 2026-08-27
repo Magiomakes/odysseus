@@ -658,6 +658,7 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
             "board_task_max_idle_wait_seconds": (0, 86400),      # 0 = no cap
             "background_task_gate_timeout_seconds": (0, 86400),  # 0 = wait forever
             "task_capacity_min_free_mem_mb": (0, 262144),        # 0 = disabled
+            "task_archive_completed_days": (-1, 365),            # -1 = never
         }
         for key in DEFAULT_SETTINGS:
             if key not in body:
