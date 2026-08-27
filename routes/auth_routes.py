@@ -655,6 +655,12 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         _INT_RANGES = {
             "agent_max_rounds": (1, 200),
             "agent_max_tool_calls": (0, 1000),  # 0 = unlimited
+            "board_task_max_idle_wait_seconds": (0, 86400),      # 0 = no cap
+            "background_task_gate_timeout_seconds": (0, 86400),  # 0 = wait forever
+            "task_capacity_min_free_mem_mb": (0, 262144),        # 0 = disabled
+        }
+        _FLOAT_RANGES = {
+            "task_capacity_max_load_per_core": (0.0, 64.0),      # 0 = disabled
         }
         for key in DEFAULT_SETTINGS:
             if key not in body:
@@ -666,6 +672,13 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
                     val = int(val)
                 except (TypeError, ValueError):
                     raise HTTPException(400, f"{key} must be an integer")
+                val = max(lo, min(val, hi))
+            elif key in _FLOAT_RANGES:
+                lo, hi = _FLOAT_RANGES[key]
+                try:
+                    val = float(val)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{key} must be a number")
                 val = max(lo, min(val, hi))
             current[key] = val
         _save_settings(current)

@@ -48,3 +48,5 @@ pytest-asyncio
 # TestClient import when only classic httpx is present. Runtime code keeps
 # using `httpx` above; this is test-client only.
 httpx2
+# system load probe for the task capacity gate (interactive_gate.system_under_load)
+psutil

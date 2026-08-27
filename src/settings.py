@@ -141,6 +141,30 @@ DEFAULT_SETTINGS = {
     # and the slot is released. 900s (15 min) is comfortable for local agent /
     # research runs while still bounding a runaway job. Set to 0 to disable.
     "task_agent_timeout_seconds": 900,
+    # Capacity gate for explicit user tasks (board handoffs). They start once
+    # the machine has headroom — an open-but-idle tab no longer blocks them.
+    # Max idle wait is a ceiling on the SOFT blockers (chat stream, machine
+    # load) only; a live even-odysseus session (ingest /health busy) is a hard
+    # block that no timer overrides. 0 = wait for full headroom indefinitely.
+    "board_task_max_idle_wait_seconds": 600,
+    # Housekeeping keeps the strict quiet gate, but bounded: when the cap
+    # expires with the machine still busy the run defers (+15 min) instead of
+    # waiting forever inside the model slot and starving everything behind it.
+    # 0 = old behavior (wait forever).
+    "background_task_gate_timeout_seconds": 600,
+    # system_under_load() thresholds: 1-min loadavg per core, and minimum
+    # available memory (psutil). Either set to 0 disables that check.
+    "task_capacity_max_load_per_core": 2.0,
+    "task_capacity_min_free_mem_mb": 2048,
+    # Task-name prefixes treated as USER-PRIORITY: explicit user requests and
+    # user-facing agents (board handoffs; the even-odysseus nightly self-model
+    # agents). They dispatch even while a browser tab is present, start on
+    # machine headroom via the capacity gate (the live worn-session hard block
+    # still applies), and a RUNNING one is never cancelled by foreground
+    # activity. Everything else keeps housekeeping semantics: quiet gate,
+    # defer on activity. Match is a simple name startswith() on any entry.
+    "user_priority_task_prefixes": [
+        "[Board] ", "Nightly insight agent", "Nightly question agent"],
     "default_endpoint_id": "",
     "default_model": "",
     # Optional prose style used only for normal document writing/editing.
