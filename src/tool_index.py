@@ -51,6 +51,10 @@ ASSISTANT_ALWAYS_AVAILABLE = frozenset({
     "bulk_email", "archive_email", "delete_email", "mark_email_read",
     "manage_calendar", "manage_notes", "manage_tasks",
     "manage_memory", "web_search", "read_file",
+    # web_fetch: a scheduled llm task may be told to GET a specific URL for
+    # grounding (even-odysseus pull model). RAG tool-selection doesn't reliably
+    # surface it for such prompts, so keep it in reach for every llm task.
+    "web_fetch",
     "create_document", "update_document",
     "resolve_contact", "search_chats",
     "api_call",  # For Miniflux/Gitea/Linkding/etc. integrations
