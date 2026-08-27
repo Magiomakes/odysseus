@@ -26,7 +26,10 @@ def _endpoint(router, method, path):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run, not get_event_loop().run_until_complete: under full-suite
+    # ordering an earlier test can close/unset the main loop, and every _run
+    # test then dies with 'There is no current event loop'.
+    return asyncio.run(coro)
 
 
 @pytest.fixture()
