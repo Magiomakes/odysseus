@@ -34,7 +34,17 @@ def _allowlist() -> set:
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
+# RFC 6598 shared address space (CGNAT). CPython classifies 100.64.0.0/10 as
+# "shared", not private, so the is_private check misses it — yet on this
+# deployment it is the TAILSCALE range: without this block an injected
+# instruction could fetch any tailnet peer. Same gap upstream closed in
+# src/url_safety.py; hosts on WEB_FETCH_ALLOWLIST still pass.
+_SHARED_ADDRESS_SPACE_V4 = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if ip.version == 4 and ip in _SHARED_ADDRESS_SPACE_V4:
+        return False
     return not (
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_unspecified or ip.is_multicast

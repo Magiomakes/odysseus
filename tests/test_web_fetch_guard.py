@@ -28,6 +28,18 @@ def test_private_and_link_local_refused(monkeypatch):
     assert check_fetch_target("http://169.254.169.254/latest/meta-data/") is not None
 
 
+def test_cgnat_shared_space_refused(monkeypatch):
+    # RFC 6598 100.64.0.0/10 — CPython says is_private=False, but on this
+    # deployment it's the Tailscale range: tailnet peers must not be fetchable
+    # by an injected instruction. Allowlisted hostnames still pass.
+    monkeypatch.delenv("WEB_FETCH_ALLOWLIST", raising=False)
+    assert check_fetch_target("http://100.64.0.1/") is not None
+    assert check_fetch_target("http://100.101.102.103:8765/health") is not None
+    # boundary: 100.63.255.255 and 100.128.0.0 are outside the /10
+    assert check_fetch_target("http://100.63.255.255/") is None
+    assert check_fetch_target("http://100.128.0.0/") is None
+
+
 def test_localhost_names_refused(monkeypatch):
     monkeypatch.delenv("WEB_FETCH_ALLOWLIST", raising=False)
     assert check_fetch_target("http://localhost:11434/api/tags") is not None
