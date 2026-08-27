@@ -66,6 +66,7 @@ class UserTask(Base):
     session_id        = Column(String, nullable=True, index=True)  # source recording (even-odysseus Session Folder basename)
     context_url       = Column(String, nullable=True)              # reachable pull URL for grounding (brain read API)
     bucket            = Column(String, nullable=True)              # even-odysseus Agent Bucket (research | email-draft | manual)
+    project           = Column(String, nullable=True, index=True)  # even-odysseus world-model entity name (ADR-0018)
     result_original   = Column(Text, nullable=True)                # pristine agent output before any human edit
     draft_saved       = Column(Integer, default=0)                 # email-draft copied to IMAP Drafts exactly once
     created_at        = Column(DateTime, default=lambda: datetime.utcnow())
@@ -83,6 +84,7 @@ def _ensure_columns():
         "session_id": "VARCHAR",
         "context_url": "VARCHAR",
         "bucket": "VARCHAR",
+        "project": "VARCHAR",
         "result_original": "TEXT",
         "draft_saved": "INTEGER",
     }
@@ -123,6 +125,7 @@ def _card_to_dict(t: UserTask) -> dict:
         "source_ref": t.source_ref,
         "context_url": t.context_url,
         "bucket": t.bucket,
+        "project": t.project,
         "result_original": t.result_original,
         "draft_saved": bool(t.draft_saved),
         "created_at": t.created_at.isoformat() + "Z" if t.created_at else None,
@@ -206,6 +209,7 @@ class IngestItem(BaseModel):
     planned_date: Optional[str] = None  # land pre-scheduled on this day column
     horizon: Optional[str] = None       # else this backlog horizon
     bucket: Optional[str] = None        # Agent Bucket label (display / draft routing)
+    project: Optional[str] = None       # even-odysseus world-model entity name (ADR-0018)
     task_type: Optional[str] = None     # "llm" | "research" → auto-handoff
     prompt: Optional[str] = None        # full grounded agent prompt (built by the brain)
 
@@ -734,6 +738,7 @@ def setup_board_routes(task_scheduler) -> APIRouter:
                     session_id=(item.session_id or None),
                     context_url=(item.context_url or None),
                     bucket=(item.bucket or None),
+                    project=(item.project or None),
                     # scheduled cards need no horizon; backlog cards surface
                     # in the given group, else the nearest one
                     horizon=None if planned else (horizon or "week"),
