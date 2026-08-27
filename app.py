@@ -733,6 +733,10 @@ from routes.stt_routes import setup_stt_routes
 app.include_router(setup_stt_routes(stt_service))
 logger.info("STT service initialized (provider managed via settings)")
 
+# Morning Brief (even-odysseus self-model daily surface: report + insights + questions)
+from routes.brief_routes import setup_brief_routes
+app.include_router(setup_brief_routes())
+
 # Documents (artifacts/canvas)
 from routes.document_routes import setup_document_routes
 document_router = setup_document_routes(session_manager, upload_handler)
@@ -761,6 +765,10 @@ app.include_router(setup_task_routes(task_scheduler))
 # My Tasks board (personal task cards; agent handoff + bridge ingest)
 from routes.board_routes import setup_board_routes
 app.include_router(setup_board_routes(task_scheduler))
+
+# Captures window (even-odysseus bridge: recordings browser + review proxies)
+from routes.bridge_routes import setup_bridge_routes
+app.include_router(setup_bridge_routes())
 
 from routes.assistant_routes import setup_assistant_routes
 app.include_router(setup_assistant_routes(task_scheduler))
@@ -857,6 +865,11 @@ app.include_router(setup_vault_routes())
 # Contacts (CardDAV)
 from routes.contacts.contacts_routes import setup_contacts_routes
 app.include_router(setup_contacts_routes())
+
+# Local mod feat/contact-notes (LOCAL-MODS.md): contact context notes +
+# a bearer-token-reachable contacts surface for the even-odysseus brain.
+from routes.contacts.contact_notes_routes import setup_contact_notes_routes
+app.include_router(setup_contact_notes_routes())
 
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
