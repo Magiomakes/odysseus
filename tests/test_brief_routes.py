@@ -158,3 +158,34 @@ def test_unconfigured_brief_is_503(monkeypatch):
     with pytest.raises(HTTPException) as e:
         _run(_endpoint(router, "GET", "/api/brief/brief")(_req(), day="2026-08-24"))
     assert e.value.status_code == 503
+
+
+# ── bearer-token gate ────────────────────────────────────────────────────────
+
+def _token_req(scopes, owner="alice", body=None):
+    r = SimpleNamespace(state=SimpleNamespace(
+        current_user="api", api_token=True,
+        api_token_owner=owner, api_token_scopes=list(scopes)))
+    if body is not None:
+        async def _json():
+            return body
+        r.json = _json
+    return r
+
+
+def test_unscoped_token_rejected(configured, calls):
+    router = brief_routes.setup_brief_routes()
+    with pytest.raises(HTTPException) as exc:
+        _run(_endpoint(router, "GET", "/api/brief/brief")(_token_req(scopes=["todos:read"])))
+    assert exc.value.status_code == 403
+    assert calls == []
+
+
+def test_ownerless_token_rejected_on_mutation(configured, calls):
+    router = brief_routes.setup_brief_routes()
+    with pytest.raises(HTTPException) as exc:
+        _run(_endpoint(router, "POST", "/api/brief/insight")(
+            _token_req(scopes=["chat"], owner=None,
+                       body={"id": 1, "disposition": "confirm"})))
+    assert exc.value.status_code == 403
+    assert calls == []

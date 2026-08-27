@@ -94,6 +94,23 @@ async def _brain(method: str, path: str, *, json_body=None,
         raise HTTPException(502, f"brain returned non-JSON for {path}")
 
 
+
+def _require_token_access(request: Request) -> None:
+    """Bearer ody_ tokens must be owner-attributed and chat-scoped to drive
+    these proxies: the mutating verbs resolve self-model insights/questions
+    through the server's full-privilege BRIDGE_TOKEN (confused-deputy risk),
+    and the brief itself is personal self-model content. Cookie sessions pass
+    through untouched — AuthMiddleware already authenticated them. Mirrors
+    the bridge_routes / model_routes token-gate idiom.
+    """
+    if getattr(request.state, "api_token", False):
+        scopes = set(getattr(request.state, "api_token_scopes", []) or [])
+        if "chat" not in scopes:
+            raise HTTPException(403, "API token missing required scope: chat")
+        if not getattr(request.state, "api_token_owner", None):
+            raise HTTPException(403, "API token has no owner")
+
+
 def setup_brief_routes() -> APIRouter:
     router = APIRouter(prefix="/api/brief", tags=["brief"])
 
@@ -117,6 +134,7 @@ def setup_brief_routes() -> APIRouter:
         defaults to yesterday — the night's run analyzes the day that ended.
         Insights/questions/review are live state, deliberately NOT the report
         row's frozen snapshot."""
+        _require_token_access(request)
         if day:
             try:
                 datetime.date.fromisoformat(day)
@@ -155,6 +173,7 @@ def setup_brief_routes() -> APIRouter:
 
     @router.post("/insight")
     async def insight(request: Request):
+        _require_token_access(request)
         try:
             body = await request.json()
         except Exception:
@@ -173,6 +192,7 @@ def setup_brief_routes() -> APIRouter:
 
     @router.post("/answer")
     async def answer(request: Request):
+        _require_token_access(request)
         try:
             body = await request.json()
         except Exception:
