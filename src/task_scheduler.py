@@ -24,6 +24,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _is_priority_task(name: str | None) -> bool:
+    """User-priority tasks — board handoffs and the even-odysseus nightly
+    self-model agents — take the capacity gate instead of the housekeeping
+    quiet gate, dispatch despite UI presence, and are never cancelled by
+    foreground activity once running. Prefixes are settings-driven
+    (`user_priority_task_prefixes`) so new agent families can opt in without
+    code changes; the fallback keeps board handoffs protected even if the
+    setting is mangled."""
+    try:
+        from src.settings import get_setting
+        prefixes = get_setting("user_priority_task_prefixes", None) or ["[Board] "]
+    except Exception:
+        prefixes = ["[Board] "]
+    n = name or ""
+    return any(n.startswith(p) for p in prefixes if isinstance(p, str) and p)
+
+
 # Shell/file tools a scheduled task's agent should be offered by default,
 # mirroring the chat agent (where these are on unless a privilege or global
 # setting turns them off). The RAG tool selector + ASSISTANT_ALWAYS_AVAILABLE
@@ -552,18 +569,23 @@ class TaskScheduler:
         except Exception:
             logger.warning("Could not persist pending task notifications", exc_info=True)
 
-    def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None):
+    def add_notification(self, task_name: str, status: str, task_id: str = None, owner: str = None, body: str = None,
+                         session_id: str = None, document_id: str = None):
         """Store a notification about a completed task run. Tagged with the
         task's owner so `pop_notifications` can return only that user's
         notifications and prevent cross-tenant drain. `body` is the result
         text — populated when output_target='notification' so the client can
-        show a rich browser Notification, not just a toast."""
+        show a rich browser Notification, not just a toast. `session_id` /
+        `document_id` let the client offer a click-through to where the
+        result actually lives."""
         self._pending_notifications.append({
             "task_name": task_name,
             "status": status,
             "task_id": task_id,
             "owner": owner,
             "body": (body[:500] + "…") if body and len(body) > 500 else body,
+            "session_id": session_id,
+            "document_id": document_id,
             "timestamp": _utcnow().isoformat() + "Z",
         })
         # Cap at 50 to avoid unbounded growth
@@ -824,6 +846,10 @@ class TaskScheduler:
                 await self._check_due_tasks()
             except Exception:
                 logger.exception("Error in task scheduler loop")
+            try:
+                await self._archive_finished_sweep()
+            except Exception:
+                logger.debug("archive sweep failed", exc_info=True)
             # Sleep until the next scheduled run, capped at 60s. A `* * * * *`
             # cron task previously fired up to ~60s late because we always
             # slept the full minute; now the loop wakes near the boundary.
@@ -844,6 +870,37 @@ class TaskScheduler:
             except Exception:
                 pass
             await asyncio.sleep(sleep_for)
+
+    async def _archive_finished_sweep(self):
+        """Auto-archive finished one-off tasks so the Tasks tab doesn't fill
+        forever (operator default: 3 days after completion). A status flip
+        only — run history is kept; delete remains the one destructive path.
+        Hourly throttle; task_archive_completed_days < 0 disables the sweep,
+        0 archives on the next sweep after completion."""
+        if time.monotonic() - getattr(self, "_last_archive_sweep", 0.0) < 3600:
+            return
+        self._last_archive_sweep = time.monotonic()
+        from src.settings import get_setting
+        try:
+            days = int(get_setting("task_archive_completed_days", 3))
+        except (TypeError, ValueError):
+            days = 3
+        if days < 0:
+            return
+        from core.database import SessionLocal, ScheduledTask
+        cutoff = _utcnow() - timedelta(days=days)
+        db = SessionLocal()
+        try:
+            n = db.query(ScheduledTask).filter(
+                ScheduledTask.status == "completed",
+                ScheduledTask.schedule == "once",
+                ScheduledTask.updated_at < cutoff,
+            ).update({"status": "archived"}, synchronize_session=False)
+            if n:
+                db.commit()
+                logger.info("Archived %d finished one-off task(s)", n)
+        finally:
+            db.close()
 
     async def _check_due_tasks(self):
         from core.database import SessionLocal, ScheduledTask
@@ -869,7 +926,11 @@ class TaskScheduler:
                 for task in due:
                     if task.id in self._executing:
                         continue
-                    if foreground_active:
+                    # User-priority tasks dispatch regardless of UI presence —
+                    # the capacity gate paces them; deferring here re-stranded
+                    # re-armed handoffs +15m forever while a tab was open, and
+                    # parked the nightly self-model agents every night.
+                    if foreground_active and not _is_priority_task(task.name):
                         task.next_run = now + timedelta(minutes=15)
                         continue
                     self._executing.add(task.id)
@@ -1006,13 +1067,46 @@ class TaskScheduler:
                 db.commit()
                 return
 
+            is_priority_task = _is_priority_task(task.name)
             if gate_foreground:
                 waiting = db.query(TaskRun).filter(TaskRun.id == run_id).first()
                 if waiting and waiting.status == "queued":
-                    waiting.result = "Queued — waiting for Odysseus to be idle…"
+                    waiting.result = ("Queued — waiting for machine headroom…"
+                                      if is_priority_task else
+                                      "Queued — waiting for Odysseus to be idle…")
                     db.commit()
-                from src.interactive_gate import wait_for_interactive_quiet
-                await wait_for_interactive_quiet(f"scheduled task {task.name}")
+                from src.interactive_gate import (
+                    external_pipeline_busy, has_foreground_activity,
+                    wait_for_capacity, wait_for_interactive_quiet)
+                from src.settings import get_setting
+                if is_priority_task:
+                    # Explicit user request / user-facing agent: start on
+                    # machine headroom (load / chat stream / live-session hard
+                    # block), not UI quiet — an open-but-idle tab used to park
+                    # these forever.
+                    await wait_for_capacity(
+                        f"priority task {task.name}",
+                        max_wait=float(get_setting(
+                            "board_task_max_idle_wait_seconds", 600)))
+                else:
+                    await wait_for_interactive_quiet(
+                        f"scheduled task {task.name}",
+                        max_wait_override=float(get_setting(
+                            "background_task_gate_timeout_seconds", 600)))
+                    if has_foreground_activity() or await external_pipeline_busy():
+                        # Cap expired with the machine still busy. Housekeeping
+                        # must never start on a timer — especially not while a
+                        # live worn session owns the machine — so defer and
+                        # release the slot instead of starting anyway.
+                        stale = db.query(TaskRun).filter(TaskRun.id == run_id).first()
+                        if stale:
+                            db.delete(stale)
+                        task.next_run = _utcnow() + timedelta(minutes=15)
+                        db.commit()
+                        logger.info(
+                            "Task '%s' deferred 15m: gate cap expired while busy",
+                            task.name)
+                        return
 
             # Flip the run from queued → running. Reset started_at to the
             # actual execution start so queue wait time is visible from
@@ -1042,11 +1136,17 @@ class TaskScheduler:
 
             # Cleared each run so an action task (no model) doesn't inherit a
             # previous llm/research run's model. The executors set it once the
-            # model is resolved.
+            # model is resolved. Same for the delivered-document id (set by
+            # _deliver_via_document, read by the completion notification).
             self._last_run_model = None
+            self._last_document_id = None
             foreground_cancel = {"hit": False}
             foreground_monitor = None
-            if gate_foreground:
+            # Priority tasks run to completion once started (same contract as
+            # the stop_background_tasks_for_foreground exemption): the operator
+            # watching the UI must not kill their own explicit request, and an
+            # overnight heartbeat must not kill the nightly self-model agents.
+            if gate_foreground and not is_priority_task:
                 current_task = asyncio.current_task()
 
                 async def _cancel_if_foreground_active():
@@ -1201,6 +1301,8 @@ class TaskScheduler:
                     task_id,
                     owner=task.owner,
                     body=run.result if output == "notification" else None,
+                    session_id=task.session_id,
+                    document_id=getattr(self, "_last_document_id", None),
                 )
             elif run.status == "error":
                 self.add_notification(
@@ -1864,6 +1966,10 @@ class TaskScheduler:
             await self._deliver_via_mcp(output, task, result)
             return
 
+        if output == "document":
+            await self._deliver_via_document(task, result)
+            return
+
         if self._is_email_output_target(output):
             await self._deliver_via_email(output, task, result)
             return
@@ -1976,6 +2082,22 @@ class TaskScheduler:
             return True
         return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", target))
 
+    async def _deliver_via_document(self, task, result: str):
+        """output_target='document': materialize the result in the Documents
+        library so it's findable where the user already looks — not only as a
+        200-char preview buried in the task card."""
+        from src.document_actions import create_result_document
+        doc_id = await asyncio.to_thread(
+            create_result_document,
+            title=task.name,
+            content=result,
+            owner=task.owner or None,
+            summary=f"Result of task '{task.name}'",
+        )
+        if doc_id:
+            self._last_document_id = doc_id
+            logger.info("Task %s result saved to Documents (%s)", task.id, doc_id)
+
     async def _deliver_via_email(self, output: str, task, result: str):
         """Send task output through the app's configured SMTP account.
 
@@ -2071,8 +2193,15 @@ class TaskScheduler:
         # behind the primary endpoint so a downed primary won't silently yield
         # `(no output)`.
         try:
-            from src.interactive_gate import wait_for_interactive_quiet
-            await wait_for_interactive_quiet(f"agent task {task.name}")
+            # Priority tasks already passed the capacity gate at start; the
+            # quiet re-gate here would park them again behind UI presence.
+            if not _is_priority_task(task.name):
+                from src.interactive_gate import wait_for_interactive_quiet
+                from src.settings import get_setting as _get_setting
+                await wait_for_interactive_quiet(
+                    f"agent task {task.name}",
+                    max_wait_override=float(_get_setting(
+                        "background_task_gate_timeout_seconds", 600)))
             from src.task_endpoint import resolve_task_candidates
             _task_fallbacks = resolve_task_candidates(
                 fallback_url=endpoint_url,
@@ -2466,8 +2595,31 @@ class TaskScheduler:
         """
         async with self._executing_lock:
             task_ids = list(self._executing)
+        # User-priority tasks (`user_priority_task_prefixes`: board handoffs
+        # being watched from the My Tasks board, the even-odysseus nightly
+        # self-model agents) are NOT deferrable housekeeping. Cancelling them
+        # on foreground activity meant the very act of watching the board
+        # (heartbeat, notes/badge timer polls) killed the worker — and an idle
+        # overnight tab killed every nightly agent for a month. They still
+        # respect the model slot and the capacity gate before STARTING; once
+        # running, they get to finish.
+        protected: set = set()
+        if task_ids:
+            from core.database import SessionLocal, ScheduledTask
+            db = SessionLocal()
+            try:
+                rows = db.query(ScheduledTask.id, ScheduledTask.name).filter(
+                    ScheduledTask.id.in_(task_ids)).all()
+                protected = {tid for tid, name in rows
+                             if _is_priority_task(name)}
+            except Exception:
+                logger.debug("priority-task protection lookup failed", exc_info=True)
+            finally:
+                db.close()
         stopped = 0
         for task_id in task_ids:
+            if task_id in protected:
+                continue
             handle = self._task_handles.get(task_id)
             if handle and not handle.done():
                 handle.cancel()

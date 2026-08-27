@@ -655,6 +655,9 @@ def setup_auth_routes(auth_manager: AuthManager) -> APIRouter:
         _INT_RANGES = {
             "agent_max_rounds": (1, 200),
             "agent_max_tool_calls": (0, 1000),  # 0 = unlimited
+            "board_task_max_idle_wait_seconds": (0, 86400),      # 0 = no cap
+            "background_task_gate_timeout_seconds": (0, 86400),  # 0 = wait forever
+            "task_capacity_min_free_mem_mb": (0, 262144),        # 0 = disabled
         }
         for key in DEFAULT_SETTINGS:
             if key not in body:
