@@ -96,6 +96,24 @@ async def _brain(method: str, path: str, *, json_body=None,
         raise HTTPException(502, f"brain returned non-JSON for {path}")
 
 
+
+def _require_token_access(request: Request) -> None:
+    """Bearer ody_ tokens must be owner-attributed and chat-scoped to drive
+    these proxies. Mutating verbs ride the server's full-privilege
+    BRIDGE_TOKEN (confused-deputy risk — the captures MCP server deliberately
+    carries only the scoped read token for the same surface), and even reads
+    expose recorded session content. Cookie sessions pass through untouched;
+    AuthMiddleware already authenticated them. Mirrors the model_routes /
+    codex_routes token-gate idiom.
+    """
+    if getattr(request.state, "api_token", False):
+        scopes = set(getattr(request.state, "api_token_scopes", []) or [])
+        if "chat" not in scopes:
+            raise HTTPException(403, "API token missing required scope: chat")
+        if not getattr(request.state, "api_token_owner", None):
+            raise HTTPException(403, "API token has no owner")
+
+
 def setup_bridge_routes() -> APIRouter:
     router = APIRouter(prefix="/api/bridge", tags=["bridge"])
 
@@ -114,15 +132,18 @@ def setup_bridge_routes() -> APIRouter:
 
     @router.get("/review")
     async def review_list(request: Request):
+        _require_token_access(request)
         return await _brain("GET", "/api/self/review")
 
     @router.post("/review/classify")
     async def review_classify(request: Request):
+        _require_token_access(request)
         return await _brain("POST", "/api/self/review/classify", json_body={},
                             timeout=_T_CLASSIFY)
 
     @router.post("/review/resolve")
     async def review_resolve(request: Request):
+        _require_token_access(request)
         try:
             body = await request.json()
         except Exception:
@@ -144,6 +165,7 @@ def setup_bridge_routes() -> APIRouter:
         call) — rides the classify-class timeout. Body is whitelisted and
         length-bounded; the edit itself was already saved by the board PATCH,
         so a failure here loses only the learning, never the edit."""
+        _require_token_access(request)
         try:
             body = await request.json()
         except Exception:
@@ -166,16 +188,19 @@ def setup_bridge_routes() -> APIRouter:
 
     @router.get("/sessions")
     async def sessions(request: Request):
+        _require_token_access(request)
         return await _brain("GET", "/api/sessions")
 
     @router.get("/sessions/{session_id}")
     async def session_detail(request: Request, session_id: str):
+        _require_token_access(request)
         if not _SESSION_ID.match(session_id):
             raise HTTPException(400, "bad session id")
         return await _brain("GET", f"/api/sessions/{session_id}")
 
     @router.get("/sessions/{session_id}/audio")
     async def session_audio(request: Request, session_id: str):
+        _require_token_access(request)
         """Stream the session's wav through so the pane's <audio> element works
         without exposing the brain token to the page."""
         if not _SESSION_ID.match(session_id):

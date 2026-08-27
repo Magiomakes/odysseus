@@ -144,3 +144,45 @@ def test_draft_feedback_unconfigured_is_503(monkeypatch):
     with pytest.raises(HTTPException) as e:
         _run(ep(_req({"card_id": "c1", "original": "x", "edited": "y"})))
     assert e.value.status_code == 503
+
+
+# ── bearer-token gate ────────────────────────────────────────────────────────
+
+def _token_req(scopes, owner="alice", body=None):
+    r = SimpleNamespace(state=SimpleNamespace(
+        current_user="api", api_token=True,
+        api_token_owner=owner, api_token_scopes=list(scopes)))
+    if body is not None:
+        async def _json():
+            return body
+        r.json = _json
+    return r
+
+
+def test_unscoped_token_rejected_on_reads_and_mutations(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    for method, path in (("GET", "/api/bridge/review"),
+                         ("GET", "/api/bridge/sessions"),
+                         ("POST", "/api/bridge/review/classify")):
+        with pytest.raises(HTTPException) as exc:
+            _run(_endpoint(router, method, path)(_token_req(scopes=["documents:read"])))
+        assert exc.value.status_code == 403
+    assert calls == []  # brain never touched
+
+
+def test_ownerless_token_rejected(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    with pytest.raises(HTTPException) as exc:
+        _run(_endpoint(router, "POST", "/api/bridge/review/resolve")(
+            _token_req(scopes=["chat"], owner=None,
+                       body={"index": 0, "disposition": "keep"})))
+    assert exc.value.status_code == 403
+    assert calls == []
+
+
+def test_chat_scoped_owned_token_passes(configured, calls):
+    router = bridge_routes.setup_bridge_routes()
+    out = _run(_endpoint(router, "GET", "/api/bridge/review")(
+        _token_req(scopes=["chat"], owner="alice")))
+    assert out.get("ok") is True
+    assert calls == [("GET", "/api/self/review", None)]
