@@ -667,6 +667,13 @@ from routes.admin_wipe.admin_wipe_routes import setup_admin_wipe_routes
 app.include_router(setup_admin_wipe_routes(session_manager))
 
 # Memory
+# Local mod (feat/memory-projection): token-reachable declarative projection
+# of the even-odysseus self-model into native memory. Registered BEFORE the
+# stock memory router — its PUT /api/memory/{memory_id} would otherwise
+# capture "projection" as a memory id. Self-contained; delete the module and
+# these lines and Odysseus is stock.
+from routes.memory.memory_projection_routes import setup_memory_projection_routes
+app.include_router(setup_memory_projection_routes(memory_manager, memory_vector=memory_vector))
 from routes.memory.memory_routes import setup_memory_routes
 memory_router = setup_memory_routes(memory_manager, session_manager, memory_vector=memory_vector)
 app.include_router(memory_router)
