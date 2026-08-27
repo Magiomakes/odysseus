@@ -166,10 +166,14 @@ def read_note(uid: str) -> str:
     return str(_sidecar_load().get(uid) or "")
 
 
-def write_note(uid: str, note: str) -> bool:
+def write_note(uid: str, note: str, *, prefetched=None) -> bool:
+    """`prefetched` is an optional (url, raw_vcard) pair from an earlier
+    _fetch_raw_vcard in the same request — the append path reads and writes
+    the same card, and fetching twice both doubled the CardDAV round-trips
+    and widened the read-modify-write race window."""
     note = (note or "")[:MAX_NOTE_CHARS]
     if _carddav_configured():
-        url, raw = _fetch_raw_vcard(uid)
+        url, raw = prefetched if prefetched is not None else _fetch_raw_vcard(uid)
         return _put_raw_vcard(url, set_note_in_vcard(raw, note))
     notes = _sidecar_load()
     if note:
@@ -249,17 +253,19 @@ def setup_contact_notes_routes() -> APIRouter:
         _principal(request)
         if not isinstance(data, dict):
             raise HTTPException(400, "body must be an object")
+        # One CardDAV fetch serves both the append-read and the write below.
+        prefetched = _fetch_raw_vcard(uid) if _carddav_configured() else None
         if "append" in data:
             addition = str(data.get("append") or "").strip()
             if not addition:
                 raise HTTPException(400, "append must be non-empty")
-            existing = read_note(uid)
+            existing = get_note_from_vcard(prefetched[1]) if prefetched else read_note(uid)
             note = f"{existing}\n{addition}".strip() if existing else addition
         elif "note" in data:
             note = str(data.get("note") or "")
         else:
             raise HTTPException(400, "provide 'append' or 'note'")
-        ok = write_note(uid, note)
+        ok = write_note(uid, note, prefetched=prefetched)
         return {"success": ok, "uid": uid, "note": note[:MAX_NOTE_CHARS]}
 
     return router
