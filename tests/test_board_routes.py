@@ -583,8 +583,12 @@ def test_reconcile_research_result_creates_document(monkeypatch):
     c = next(t for t in got["tasks"] if t["id"] == card["id"])
     assert c["status"] == "in_review"
     assert len(created) == 1
-    assert created[0]["title"] == "Research Y"
-    assert created[0]["content"] == "Deep findings"
+    # Title is prefixed and content carries a run-id footer so upstream's
+    # run_document_tidy can neither junk-title-match nor fingerprint-dedupe
+    # these docs (tidy hard-deletes; see board_routes reconcile comment).
+    assert created[0]["title"] == "Research: Research Y"
+    assert created[0]["content"].startswith("Deep findings")
+    assert "Board handoff · run " in created[0]["content"]
     assert created[0]["owner"] == "alice"
 
 

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import os
 import time
+
+logger = logging.getLogger(__name__)
 
 
 _ACTIVE_REQUESTS = 0
@@ -112,7 +115,16 @@ async def external_pipeline_busy() -> bool:
         async with httpx.AsyncClient(timeout=0.5) as client:
             resp = await client.get(f"{base}/health")
             busy = bool(resp.json().get("busy"))
-    except Exception:
+    except Exception as e:
+        # Fail-open by design, but not SILENTLY: a BRIDGE_BASE_URL typo or a
+        # dead brain service would otherwise disable the hard block with no
+        # trace. Rate-limited so the 1s-poll loop can't flood the log.
+        if now - _PIPELINE_CACHE.get("warn_t", 0.0) > 600:
+            _PIPELINE_CACHE["warn_t"] = now
+            logger.warning(
+                "capacity gate: brain /health probe failed (%s: %s) — "
+                "treating pipeline as not-busy (fail-open)",
+                type(e).__name__, e)
         busy = False
     _PIPELINE_CACHE["t"] = now
     _PIPELINE_CACHE["busy"] = busy

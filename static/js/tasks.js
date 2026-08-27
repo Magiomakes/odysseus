@@ -3125,6 +3125,12 @@ let _notifInterval = null;
 // {label, open} pair for the click-through, or null when there's nowhere
 // better than the Tasks tab to go.
 function _notifTarget(n) {
+  // Board handoffs first: their review surface is the board card (which
+  // reconciles the run on open), not a document or chat session — routing
+  // anywhere else strands the user in an unlinked copy of the result.
+  if ((n.task_name || '').startsWith('[Board] ') && window.odysseusBoard?.open) {
+    return { label: 'open board', open: () => window.odysseusBoard.open() };
+  }
   if (n.document_id && window.documentModule?.loadDocument) {
     return { label: 'open doc', open: () => window.documentModule.loadDocument(n.document_id) };
   }
@@ -3140,17 +3146,25 @@ async function _pollTaskNotifications() {
     if (!res.ok) return;
     const data = await res.json();
     const notes = data.notifications || [];
+    // Completed-view refresh is per-BATCH, not per-notification (N successes
+    // used to trigger N full fetch+rerenders), and only counts as "seen" when
+    // the modal is actually visible — a minimized Tasks window still matches
+    // the .active selector, and refreshing into it cleared the pending chip
+    // for an update the user never saw.
+    if (notes.some((n) => n.status === 'success')) {
+      // modalManager.minimize() adds 'hidden' to the element, so this covers
+      // both closed-never-opened and minimized-to-chip states.
+      const modalEl = document.getElementById('tasks-modal');
+      const visible = _open && modalEl && !modalEl.classList.contains('hidden');
+      if (visible && document.querySelector('.tasks-tab.active[data-tab="completed"]')) {
+        _setTaskCompletionPending(false);
+        _renderCompletedView();
+      } else {
+        _setTaskCompletionPending(true);
+      }
+    }
     for (const n of notes) {
       const ok = n.status === 'success';
-      if (ok) {
-        const completedOpen = _open && document.querySelector('.tasks-tab.active[data-tab="completed"]');
-        if (completedOpen) {
-          _setTaskCompletionPending(false);
-          _renderCompletedView();
-        } else {
-          _setTaskCompletionPending(true);
-        }
-      }
       const target = ok ? _notifTarget(n) : null;
       // Tasks with output_target='notification' carry the result text in `body`
       // — show it as a real browser Notification (richer than a toast). Falls
@@ -3214,4 +3228,3 @@ window.tasksModule = tasksModule;
 // notifications used to be invisible until the user happened to open Tasks
 // once per page load. Anonymous/unreachable polls no-op server-side.
 startNotificationPolling();
-setTimeout(_pollTaskNotifications, 8000);

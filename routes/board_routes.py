@@ -430,9 +430,14 @@ def _reconcile_handed_off(db, owner) -> int:
             is_research = bool(t and t.task_type == "research")
         if run.status == "success" and is_research and run.result:
             from src.document_actions import create_result_document
+            # Title prefix + run-id footer keep these docs out of upstream's
+            # run_document_tidy blast radius: a bare card title like "Draft"
+            # or "Test" exact-matches _JUNK_TITLES (hard DELETE after 15 min),
+            # and two runs of the same re-armed card would otherwise share a
+            # (title, content-fingerprint) key and be deduped to one.
             doc_id = create_result_document(
-                title=card.title or "Research result",
-                content=run.result,
+                title=f"Research: {card.title}" if card.title else "Research result",
+                content=f"{run.result}\n\n---\n*Board handoff · run {run.id}*",
                 owner=card.owner or None,
                 summary="Board research handoff result",
             )

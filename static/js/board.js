@@ -172,10 +172,14 @@ async function _loadInbox() {
 async function _loadModels() {
   try {
     const data = await _api('GET', '/api/models');
-    const raw = Array.isArray(data) ? data : (data.models || data.data || []);
-    _models = raw
+    // /api/models returns {hosts, items:[{models:[...], models_extra:[...]}]}
+    // — one entry per endpoint. Flatten to a de-duplicated model-id list
+    // (offline endpoints contribute empty arrays and drop out naturally).
+    const items = Array.isArray(data?.items) ? data.items : [];
+    _models = [...new Set(items
+      .flatMap(it => [...(it.models || []), ...(it.models_extra || [])])
       .map(m => (typeof m === 'string' ? m : (m.id || m.name || m.model || '')))
-      .filter(Boolean);
+      .filter(Boolean))];
   } catch { _models = []; }
 }
 

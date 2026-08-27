@@ -1872,10 +1872,14 @@ class TaskScheduler:
         library so it's findable where the user already looks — not only as a
         200-char preview buried in the task card."""
         from src.document_actions import create_result_document
+        # Date-stamped footer: a recurring task that emits a constant result
+        # would otherwise produce documents sharing a (title, fingerprint)
+        # key, and upstream's run_document_tidy hard-deletes all but one.
+        stamp = _utcnow().strftime("%Y-%m-%d %H:%M UTC")
         doc_id = await asyncio.to_thread(
             create_result_document,
             title=task.name,
-            content=result,
+            content=f"{result}\n\n---\n*Result of task run · {stamp}*",
             owner=task.owner or None,
             summary=f"Result of task '{task.name}'",
         )
