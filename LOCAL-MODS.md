@@ -46,6 +46,7 @@ onto new upstream is either clean or a tiny obvious conflict in one file.
 | `feat/contact-notes` | **Contact context notes + bearer-reachable contacts surface** (`/api/contact-notes/*`) — the even-odysseus CRM loop's storage (ADR-0015). CardDAV mode edits the vCard's standard NOTE property SURGICALLY on the raw card (upstream's rebuild-the-card `_update_contact` would destroy ORG/PHOTO/foreign props — never called); no CardDAV → `DATA_DIR/contact_notes.json` sidecar. search (notes attached) / add / get-append-replace note. Auth via the `effective_user` pattern (bearer `ody_` acts as its minting owner; upstream contact routes' `require_admin` 403s tokens). Added 2026-08-22. | `routes/contacts/contact_notes_routes.py` (new), `tests/test_contact_notes_routes.py` (new), `app.py` |
 | `feat/task-lifecycle` | Finished one-off tasks stop piling up in the Tasks tab: an hourly scheduler sweep archives completed `schedule='once'` tasks older than `task_archive_completed_days` (default 3; -1 disables; status flip only — runs history kept, still deletable). `GET /api/tasks` excludes archived by default (`?status=archived` to view); `POST /api/tasks/archive-finished` backs the "clear finished (N)" chip; `archived` chip in the Tasks tab. Added 2026-08-25. | `src/task_scheduler.py`, `routes/task_routes.py`, `routes/auth_routes.py`, `src/settings.py`, `static/js/tasks.js`, `tests/test_task_archive_sweep.py` (new) |
 | `feat/morning-brief` | **Morning Brief window** — the self-model loop's daily surface (even-odysseus ADR-0013/0014/0016). Stock floating window: masthead (date + counts + question-budget ticks), the ≤5 morning questions answered INLINE (answer / "I don't know yet" / skip → brain `/api/self/questions/answer`), inferred insights judged Confirm/Dismiss (→ brain `/api/self/insights/resolve`, the ADR-0009 provenance gate), yesterday's report narrative, Today preview via the board mod (soft dependency, hidden when absent). `/api/brief/*` proxies the brain server-side (shares `BRIDGE_BASE_URL`/`BRIDGE_TOKEN` with feat/bridge-review; hidden entirely when unconfigured). No polling timers — no interactive_gate entry needed. First visit of a day auto-opens once (localStorage `brief-auto-open` toggle) + sidebar unseen dot. Added 2026-08-25. | `routes/brief_routes.py` (new), `static/js/brief.js` (new), `static/brief.css` (new), `tests/test_brief_routes.py` (new), `app.py` (STT anchor), `static/index.html` |
+| `feat/captures-mcp` | **Captures MCP server** — read-only stdio MCP server (`search_captures`, `get_capture`, `list_recent_captures`, `get_day_digest`, `get_operator_profile`) over the even-odysseus brain's read API (its ADR-0017 surface), so the chat AI can search/read recorded sessions and the operator profile. Carries ONLY the scoped `BRIDGE_READ_TOKEN` (never `BRIDGE_TOKEN` — prompt-injection blast radius, even-odysseus ADR-0013); GET-only; size caps enforced server-side here. Registered via the admin MCP UI (DB row, stdio, `venv/bin/python mcp_servers/captures_server.py`), NOT `_BUILTIN_SERVERS` — zero app-code change, and non-builtin tools auto-flow to the chat agent. **Requires `BRIDGE_READ_TOKEN=<even-odysseus INGEST_READ_TOKEN>` in `.env`.** Added 2026-08-27. | `mcp_servers/captures_server.py` (new), `tests/test_captures_mcp.py` (new) |
 | `meta/local-mods-guide` | This document. | `LOCAL-MODS.md` |
 
 ### Dropped because upstream absorbed them
@@ -86,7 +87,7 @@ git merge --ff-only origin/main
 
 # 3. Re-seat each mod onto the new base, one at a time.
 #    Each is a single commit, so a conflict (if any) is small and local.
-for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief meta/local-mods-guide; do
+for b in fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief feat/captures-mcp meta/local-mods-guide; do
   echo "==> rebasing $b"
   git checkout "$b" && git rebase main || {
     echo "CONFLICT in $b — resolve the file, 'git add' it, then 'git rebase --continue'."
@@ -97,11 +98,11 @@ done
 
 # 4. Rebuild the integration branch = main + all mods, and run from it.
 git checkout -B integration main
-git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief meta/local-mods-guide
+git merge --no-edit fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief feat/captures-mcp meta/local-mods-guide
 
 # 5. (optional) push the re-seated branches to your fork
 git push --force-with-lease fork \
-  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief meta/local-mods-guide
+  fix/task-owner-attribution fix/task-agent-wall-clock-timeout fix/app-bind-host feat/task-grounding-url-fetch fix/web-fetch-private-ip-guard fix/task-result-delivery fix/memory-mcp-owner feat/task-board feat/task-lifecycle feat/bridge-review feat/contact-notes feat/morning-brief feat/captures-mcp meta/local-mods-guide
 ```
 
 ### If a rebase hits a conflict
