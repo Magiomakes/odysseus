@@ -140,9 +140,11 @@ def test_projection_registers_before_stock_memory_router(tmp_path):
     assert r.json()["added"] == 1
 
 
-def test_unauthenticated_token_401(tmp_path):
-    # A bearer token with no minting owner and no cookie user, with auth
-    # configured, must be refused — it must not write owner-less rows.
+def test_ownerless_token_403(tmp_path):
+    # A bearer token with no minting owner must be refused (403 — the token
+    # authenticated, it just isn't authorized): effective_user would fall
+    # back to the 'api' pseudo-user and the projection would write rows
+    # invisible to every human UI. Mirrors contact_notes_routes.
     client, _ = make_client(tmp_path, token_owner=None, api_token=True)
     r = _put(client, entries=[{"key": "eo-self:1", "text": "t"}])
-    assert r.status_code == 401
+    assert r.status_code == 403

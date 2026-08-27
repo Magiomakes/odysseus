@@ -91,15 +91,23 @@ async def action_consolidate_memory(owner: str, **kwargs) -> Tuple[str, bool]:
         def _memory_owner(mem: dict) -> str:
             return (mem.get("owner") or "").strip()
 
+        # Projected memories (memory_projection_routes) are reconciled
+        # declaratively against the even-odysseus self-model — the brain is
+        # their source of truth and the next sync re-creates anything removed
+        # here, so consolidating them is pure churn (delete → re-add → delete).
+        # Keep them out of the candidate groups; they stay in all_memories so
+        # the save below never drops them.
+        candidates = [m for m in all_memories if not m.get("projection_key")]
+
         # Built-in housekeeping can run without an owner. In that case scan all
         # memories, but keep every AI prompt/apply step owner-local.
         if _owner_clean:
             memory_groups = {
-                _owner_clean: [m for m in all_memories if _memory_owner(m) == _owner_clean]
+                _owner_clean: [m for m in candidates if _memory_owner(m) == _owner_clean]
             }
         else:
             memory_groups = {}
-            for mem in all_memories:
+            for mem in candidates:
                 memory_groups.setdefault(_memory_owner(mem), []).append(mem)
 
         memory_groups = {group_owner: group for group_owner, group in memory_groups.items() if group}

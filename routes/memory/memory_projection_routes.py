@@ -64,6 +64,13 @@ def _require_user(request: Request) -> Optional[str]:
     """`effective_user` (bearer ody_ acts as its minting owner) or the cookie
     user; 401 only when auth is configured and neither is present. Mirrors
     contact_notes_routes."""
+    # Bearer token with no minting owner: never allow — effective_user would
+    # fall back to the "api" pseudo-user and the projection would write memory
+    # rows invisible to every human UI and undeletable through the
+    # owner-scoped memory routes.
+    if getattr(request.state, "api_token", False) and \
+            not getattr(request.state, "api_token_owner", None):
+        raise HTTPException(403, "token has no owner")
     user = effective_user(request)
     if user:
         return user
@@ -158,6 +165,13 @@ def setup_memory_projection_routes(memory_manager, memory_vector=None):
 
         if added or updated or deleted:
             memory_manager.save(all_mem)
+            # Same event the stock memory POST fires — badge counts / reindex
+            # listeners must see projected memories too.
+            try:
+                from src.event_bus import fire_event
+                fire_event("memory_added", user)
+            except Exception:
+                logger.debug("memory_added event dispatch failed", exc_info=True)
 
         logger.info("memory projection [%s] owner=%s: +%d ~%d -%d =%d",
                     prefix, user, added, updated, deleted, kept)
