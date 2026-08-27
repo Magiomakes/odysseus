@@ -339,7 +339,8 @@ def test_ingest_v2_lands_prescheduled_with_provenance():
                "planned_date": "2026-08-24", "source": "even-odysseus",
                "added_at": "2026-08-21T10:00:00Z", "bucket": "manual",
                "session_id": "2026-08-21_0900_vet-chat",
-               "context_url": "http://brain/api/sessions/2026-08-21_0900_vet-chat"}
+               "context_url": "http://brain/api/sessions/2026-08-21_0900_vet-chat",
+               "project": "Innovation Sprint Fall 2026"}
     out = _run(ingest(_req("alice", body=payload)))
     assert out["created"] == 1 and out["handed_off"] == 0
 
@@ -349,6 +350,7 @@ def test_ingest_v2_lands_prescheduled_with_provenance():
     assert t["session_id"] == "2026-08-21_0900_vet-chat"
     assert t["context_url"].endswith("vet-chat")
     assert t["bucket"] == "manual"
+    assert t["project"] == "Innovation Sprint Fall 2026"  # world-model link (ADR-0018)
     assert t["source_ref"]                           # exposed for clients
 
 
