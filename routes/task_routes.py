@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from core.database import SessionLocal, ScheduledTask, TaskRun
 from core.constants import internal_api_base
-from src.auth_helpers import get_current_user, effective_user
+from src.auth_helpers import effective_user
 from src.constants import DATA_DIR, EMAIL_URGENCY_CACHE_DIR
 from src.task_action_policy import (
     ADMIN_ONLY_TASK_ACTIONS,
@@ -310,6 +310,18 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         # "api" pseudo-user, so externally-created tasks (and their completion
         # notifications) land in the owner's task list rather than siloing
         # under "api" where the owner's named-login UI never sees them.
+        #
+        # The gate must run BEFORE effective_user: an ownerless token would
+        # otherwise silently degrade to the "api" pseudo-user and re-create
+        # the silo this mod exists to prevent, and an unscoped token would
+        # get task CRUD (arbitrary LLM execution + the output_target surface)
+        # it was never minted for.
+        if getattr(request.state, "api_token", False):
+            scopes = set(getattr(request.state, "api_token_scopes", []) or [])
+            if "chat" not in scopes:
+                raise HTTPException(403, "API token missing required scope: chat")
+            if not getattr(request.state, "api_token_owner", None):
+                raise HTTPException(403, "API token has no owner")
         return effective_user(request)
 
     async def _generate_task_name(prompt: str, owner: Optional[str] = None) -> str:
@@ -438,11 +450,20 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     # API. See review CRIT-C.
     _ADMIN_ONLY_ACTIONS = ADMIN_ONLY_TASK_ACTIONS
 
-    def _is_admin(user: str | None) -> bool:
+    def _is_admin(user: str | None, *, from_token: bool = False) -> bool:
+        # A bearer token is a delegated credential, not the admin at the
+        # keyboard: even a token minted BY an admin must not unlock the
+        # shell-executing task actions (run_local / run_script / ssh_command).
+        # Before owner attribution these actions were unreachable via token
+        # (the "api" pseudo-user is never admin); attributing the real owner
+        # must not silently re-open them.
+        if from_token:
+            return False
         return owner_has_admin_task_privileges(user)
 
-    def _require_admin_for_task_action(user: str | None, task_type: str | None, action: str | None) -> None:
-        if is_admin_only_task_action(task_type, action) and not _is_admin(user):
+    def _require_admin_for_task_action(user: str | None, task_type: str | None, action: str | None,
+                                       *, from_token: bool = False) -> None:
+        if is_admin_only_task_action(task_type, action) and not _is_admin(user, from_token=from_token):
             raise HTTPException(403, f"Action '{action}' requires admin privileges")
 
     def _validate_then_task_id(db, then_task_id: Optional[str], user: Optional[str], current_task_id: Optional[str] = None) -> Optional[str]:
@@ -471,7 +492,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         # Block shell-executing action types for non-admins. action_run_local
         # uses subprocess.run(shell=True) and ssh_command / run_script run
         # arbitrary commands.
-        _require_admin_for_task_action(user, req.task_type, req.action)
+        _require_admin_for_task_action(user, req.task_type, req.action,
+                                       from_token=bool(getattr(request.state, "api_token", False)))
         if req.trigger_type == "schedule" and not req.schedule:
             raise HTTPException(400, "Schedule is required for schedule-triggered tasks")
         if req.trigger_type == "schedule" and req.schedule == "cron" and not req.cron_expression:
@@ -687,7 +709,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
 
             next_task_type = req.task_type if req.task_type is not None else task.task_type
             next_action = req.action if req.action is not None else task.action
-            _require_admin_for_task_action(user, next_task_type, next_action)
+            _require_admin_for_task_action(user, next_task_type, next_action,
+                                           from_token=bool(getattr(request.state, "api_token", False)))
 
             if req.name is not None:
                 task.name = req.name
@@ -812,7 +835,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 raise HTTPException(404, "Task not found")
             if user and task.owner != user:
                 raise HTTPException(403, "Access denied")
-            _require_admin_for_task_action(user, task.task_type, task.action)
+            _require_admin_for_task_action(user, task.task_type, task.action,
+                                           from_token=bool(getattr(request.state, "api_token", False)))
             task.status = "active"
             if (task.trigger_type or "schedule") == "schedule":
                 task.next_run = compute_next_run(
@@ -875,7 +899,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 raise HTTPException(404, "Task not found")
             if user and task.owner != user:
                 raise HTTPException(403, "Access denied")
-            _require_admin_for_task_action(user, task.task_type, task.action)
+            _require_admin_for_task_action(user, task.task_type, task.action,
+                                           from_token=bool(getattr(request.state, "api_token", False)))
         finally:
             db.close()
         started = await task_scheduler.run_task_now(task_id, force=force)
