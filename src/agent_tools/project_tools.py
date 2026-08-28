@@ -102,6 +102,30 @@ def _match_project(entities, wanted: str):
     return candidates[0] if candidates else None
 
 
+def _find_identical_file(abs_dir: str, body_bytes: bytes):
+    """Name of an existing non-hidden file in abs_dir with exactly these
+    bytes, or None. Size prefilter keeps this cheap; project folders are
+    small by construction."""
+    try:
+        with os.scandir(abs_dir) as it:
+            for entry in it:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_size != len(body_bytes):
+                        continue
+                    with open(entry.path, "rb") as f:
+                        if f.read() == body_bytes:
+                            return entry.name
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return None
+
+
 class SaveToProjectTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         # Lazy import: routes module carries fastapi/httpx deps and the
@@ -158,6 +182,22 @@ class SaveToProjectTool:
             abs_dir = _pr._docs_abs(rel)
             created = not os.path.isdir(abs_dir)
             os.makedirs(abs_dir, exist_ok=True)
+
+            # Idempotency: local models have been observed re-issuing the
+            # identical call in the next round. The RAG layer already dedupes
+            # by content-hash (an identical chunk is a no-op keeping the FIRST
+            # file's metadata), so writing a suffixed twin would create disk
+            # noise whose later delete can't deindex anything. If a file with
+            # these exact bytes already exists in the folder, report it filed.
+            existing = _find_identical_file(abs_dir, body_bytes)
+            if existing:
+                project_name = entity.get("name") or project_ref
+                return {"output": f"Already filed to project {project_name!r} "
+                                  f"as {existing} ({rel}/{existing}) — identical "
+                                  "content, nothing new to index. It is in the "
+                                  "Workspace Projects view and retrievable in "
+                                  "chats.",
+                        "exit_code": 0}
 
             ext = _FORMAT_EXTS.get((fmt or "").lower(), ".md")
             stem = (title or _derive_title(body)).strip() or "note"

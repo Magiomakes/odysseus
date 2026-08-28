@@ -158,6 +158,23 @@ def test_id_match(env, monkeypatch):
     assert "Williams Fellowship" in out["output"]
 
 
+def test_identical_recall_is_idempotent(env, monkeypatch):
+    """A repeated identical call (observed with local models re-issuing the
+    same tool call next round) must NOT create a suffixed twin file — RAG
+    dedupes by content-hash, so the twin would be unindexable disk noise."""
+    _fake_brain(monkeypatch, {"/api/self/world": _WORLD})
+    call = ("<project>3</project><title>notes</title>"
+            "<content>same bytes</content>")
+    first = _run(SaveToProjectTool().execute(call, {"owner": "alice"}))
+    assert first["exit_code"] == 0 and len(env.rag.added) == 1
+    second = _run(SaveToProjectTool().execute(call, {"owner": "alice"}))
+    assert second["exit_code"] == 0
+    assert "Already filed" in second["output"] and "notes.md" in second["output"]
+    assert len(env.rag.added) == 1  # nothing re-indexed
+    proj = env.base / "projects" / "Williams Fellowship"
+    assert sorted(p.name for p in proj.iterdir()) == ["notes.md"]
+
+
 def test_collision_gets_suffixed_name(env, monkeypatch):
     proj = env.base / "projects" / "Williams Fellowship"
     proj.mkdir(parents=True)
