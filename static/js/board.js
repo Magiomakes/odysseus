@@ -27,6 +27,7 @@ const HOME_KEY = 'board-home-view';
 const COLLAPSE_KEY = 'board-horizons-collapsed';
 const SHOW_AGENTS_KEY = 'board-show-agents';
 const SHOW_BACKLOG_KEY = 'board-show-backlog';
+const PROJECT_FILTER_KEY = 'board-project-filter';
 
 function _railOn(key) { return (localStorage.getItem(key) || 'on') === 'on'; }
 function _railToggle(key) {
@@ -55,6 +56,8 @@ const HORIZONS = [
 let _tasks = [];
 let _models = [];
 let _channelFilter = null;
+let _projectFilter = localStorage.getItem(PROJECT_FILTER_KEY) || null;
+let _projectMapPromise = null;  // name→entity-id cache, one fetch per board open
 let _open = false;
 let _view = 'today';   // Workspace view: 'today' | 'projects'
 let _dragId = null;
@@ -187,7 +190,40 @@ async function _loadModels() {
 /* ── selection helpers ── */
 
 function _visible(t) {
-  return !_channelFilter || t.channel === _channelFilter;
+  return (!_channelFilter || t.channel === _channelFilter) &&
+    (!_projectFilter || t.project === _projectFilter);
+}
+
+/* ── project chip → Projects view deep link (DESIGN-projects-surface) ──
+   A card's `project` is a world-model entity NAME; the Projects view
+   deep-links by entity ID. Resolve name→id via /api/projects
+   (case-insensitive), cached for the lifetime of the open board window.
+   An unresolvable name still jumps — with a sentinel id, so projects.js's
+   own unknown-id fallback (toast + back to list) handles the miss; no
+   second toast path lives here. */
+
+function _projectMap() {
+  if (!_projectMapPromise) {
+    _projectMapPromise = _api('GET', '/api/projects').then(data => {
+      const m = new Map();
+      for (const p of (data.projects || [])) {
+        if (p && p.name != null && p.id != null) {
+          m.set(String(p.name).trim().toLowerCase(), p.id);
+        }
+      }
+      return m;
+    }).catch(() => {
+      _projectMapPromise = null;   // transient failure — retry on next click
+      return new Map();
+    });
+  }
+  return _projectMapPromise;
+}
+
+async function _jumpToProject(name) {
+  const map = await _projectMap();
+  const id = map.get(String(name).trim().toLowerCase());
+  switchWorkspaceView('projects', { project: id != null ? id : -1 });
 }
 
 // Day/backlog columns hold cards that are NOT parked in the agents column.
@@ -231,6 +267,9 @@ function _cardEl(t) {
   if (t.channel) {
     meta.push(`<span class="board-card-channel" style="color:${_channelColor(t.channel)}">#${_esc(t.channel)}</span>`);
   }
+  if (t.project) {
+    meta.push(`<button type="button" class="board-card-project" title="Open project: ${_esc(t.project)}">${_esc(t.project)}</button>`);
+  }
   if (t.due) meta.push(`<span class="board-card-due${overdue ? ' overdue' : ''}">due ${_esc(t.due)}</span>`);
   if (t.status === 'handed_off') meta.push('<span>working…</span>');
   if (t.status === 'in_review') meta.push('<span>ready</span>');
@@ -242,6 +281,11 @@ function _cardEl(t) {
       ${est ? `<span class="board-card-est">${est}</span>` : ''}
     </div>
     ${meta.length ? `<div class="board-card-meta">${meta.join('')}</div>` : ''}`;
+  // Project chip jumps the Workspace to that project's page.
+  el.querySelector('.board-card-project')?.addEventListener('click', e => {
+    e.stopPropagation();
+    _jumpToProject(t.project);
+  });
   // Auto-landed capture todos are dismissable in one hover-click (delete =
   // dismiss, ADR-0015) — the decision the old review inbox used to gate.
   if (fromCapture && t.status === 'todo') {
@@ -728,12 +772,26 @@ function _headerEl() {
   const opts = ['<option value="">#all</option>']
     .concat(channels.map(c => `<option value="${_esc(c)}"${c === _channelFilter ? ' selected' : ''}>#${_esc(c)}</option>`))
     .join('');
+  // Project filter (DESIGN-projects-surface board amendment): distinct
+  // project names present on current cards. No projects on the board →
+  // the control does not render at all, and a stale persisted filter is
+  // dropped so it can't hide cards invisibly.
+  const projects = [...new Set(_tasks.filter(t => t.project && t.status !== 'archived').map(t => t.project))]
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  if (_projectFilter && !projects.includes(_projectFilter)) {
+    _projectFilter = null;
+    localStorage.removeItem(PROJECT_FILTER_KEY);
+  }
+  const projOpts = ['<option value="">all projects</option>']
+    .concat(projects.map(p => `<option value="${_esc(p)}"${p === _projectFilter ? ' selected' : ''}>${_esc(p)}</option>`))
+    .join('');
   const agentsOn = _railOn(SHOW_AGENTS_KEY);
   const backlogOn = _railOn(SHOW_BACKLOG_KEY);
   const workingN = _tasks.filter(t => _inAgentsCol(t)).length;
   head.innerHTML = `
     <span class="board-range">${today} → ${_addDays(today, 6)}</span>
     <select class="board-channel-filter" title="Filter by channel">${opts}</select>
+    ${projects.length ? `<select class="board-project-filter" title="Filter by project">${projOpts}</select>` : ''}
     <span class="board-header-spacer"></span>
     <button class="board-rail-toggle${agentsOn ? '' : ' rail-off'}" data-rail="agents"
       title="Show/hide the agents column">agents${!agentsOn && workingN ? ` (${workingN})` : ''}</button>
@@ -742,6 +800,12 @@ function _headerEl() {
     <button id="board-refresh-btn" title="Refresh">refresh</button>`;
   head.querySelector('.board-channel-filter').addEventListener('change', e => {
     _channelFilter = e.target.value || null;
+    _render();
+  });
+  head.querySelector('.board-project-filter')?.addEventListener('change', e => {
+    _projectFilter = e.target.value || null;
+    if (_projectFilter) localStorage.setItem(PROJECT_FILTER_KEY, _projectFilter);
+    else localStorage.removeItem(PROJECT_FILTER_KEY);
     _render();
   });
   head.querySelector('[data-rail="agents"]').addEventListener('click', () => _railToggle(SHOW_AGENTS_KEY));
@@ -791,7 +855,7 @@ function _columnEl(date, { label, extraClass = '', colIndex = 0, cards = null } 
 function _fingerprint() {
   // _today() included: the TODAY column must move at midnight even if no
   // task changed.
-  return JSON.stringify([_tasks, _inbox, _channelFilter, _today()]);
+  return JSON.stringify([_tasks, _inbox, _channelFilter, _projectFilter, _today()]);
 }
 
 function _render() {
@@ -1170,6 +1234,7 @@ function _teardown() {
   _open = false;
   _view = 'today';
   _lastPaint = '';
+  _projectMapPromise = null;   // name→id cache lives per board open
   _closeDetail();
   document.getElementById('board-picker-backdrop')?.remove();
   if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
