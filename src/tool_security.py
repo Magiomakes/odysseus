@@ -61,6 +61,9 @@ NON_ADMIN_BLOCKED_TOOLS = BUILTIN_EMAIL_TOOLS | {
     "manage_tokens",
     "manage_documents",
     "manage_settings",
+    # Writes into the operator's personal_docs store + RAG index — same
+    # admin-only surface as the Projects view routes (require_admin).
+    "save_to_project",
     "api_call",
     "app_api",
     "resolve_contact",
@@ -142,7 +145,8 @@ PLAN_MODE_READONLY_TOOLS = {
 _PLAN_MODE_KNOWN_MUTATORS = {
     "write_file", "edit_file", "apply_patch", "todowrite",
     "create_document", "edit_document", "update_document",
-    "suggest_document", "manage_documents", "create_session", "manage_session",
+    "suggest_document", "manage_documents", "save_to_project",
+    "create_session", "manage_session",
     "send_to_session", "pipeline", "manage_memory", "manage_skills",
     "manage_tasks", "manage_notes", "manage_endpoints", "manage_mcp",
     "manage_webhooks", "manage_tokens", "manage_settings", "manage_contact",

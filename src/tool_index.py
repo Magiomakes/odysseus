@@ -85,6 +85,7 @@ BUILTIN_TOOL_DESCRIPTIONS: Dict[str, str] = {
     "apply_patch": "Apply a multi-file patch to source files ON DISK. Use for implementation, refactors, and bug fixes where several edits belong together. Workspace-confined and returns a diff. Prefer over bash redirects/heredocs/sed.",
     "todowrite": "Maintain a structured task list for the current coding session. Use for multi-step code work: inspect, edit, test, and mark statuses current.",
     "create_document": "Create a new document in the editor panel. For code, articles, text content longer than 15 lines, unless an already-open document/email draft is the obvious target. If an email compose draft is open, edit that draft instead of creating another document.",
+    "save_to_project": "Save/file text into one of the user's PROJECTS (Workspace Projects view): 'save this to the Williams Fellowship project as meeting-notes', 'file these notes under project X', 'add this to my project'. Writes a file into the project's document folder and indexes it so it is immediately browsable in the Projects view and retrievable in any chat. NOT for editor documents (create_document) or arbitrary disk files (write_file).",
     "edit_document": "Preferred tool for editing an existing document — targeted find-and-replace. Use for any small change: add a function, fix a bug, tweak a section, rename things.",
     "update_document": "Replace the entire active document content. ONLY for full rewrites (>50% changed). Do not use for small edits — use edit_document instead.",
     "suggest_document": "Suggest changes to the active document with explanations. For code review, proofreading, feedback requests.",
@@ -517,6 +518,10 @@ class ToolIndex:
         frozenset({"write a", "create a doc", "draft", "compose", "poem", "story",
                    "essay", "outline", "letter"}):
             {"create_document", "edit_document", "update_document"},
+        # Project filing intent — "save this to the X project", "file this
+        # under project Y". Word-boundary matched, so "projector" won't fire.
+        frozenset({"project", "projects"}):
+            {"save_to_project"},
     }
 
     def get_tools_for_query(

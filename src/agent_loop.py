@@ -648,6 +648,16 @@ why this change improves the code
 ```
 Suggest changes with explanations (for review/feedback requests).""",
 
+    "save_to_project": """\
+```save_to_project
+<project>Project name or id</project>
+<title>optional title (becomes the filename)</title>
+<content>
+the text to save
+</content>
+```
+File text into one of the user's PROJECTS (the Workspace Projects view): writes a file into that project's document folder and indexes it for retrieval, so it immediately appears in the project's file list and is findable in any chat. Use when the user says "save this to <project>", "file this under the <X> project", "add these notes to <project>". `<project>` is the project name (case-insensitive) or id — on a wrong name the error lists the real ones. Optional `<format>txt</format>` for plain text (default is markdown). NOT for editor documents (create_document) and NOT for arbitrary disk files (write_file).""",
+
     "generate_image": """\
 ```generate_image
 <prompt>
