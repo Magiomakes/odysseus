@@ -527,6 +527,38 @@
   padding: 0 6px;
   letter-spacing: 0.06em;
 }
+/* project chip — the capture pill's solid, clickable sibling; jumps the
+   Workspace to that project's page. Explicit height/margin declarations
+   defeat the stock mobile `button {height:32px}` / `.modal-body button
+   {margin-top:6px}` rules. */
+.board-card-meta .board-card-project {
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--color-muted) 45%, transparent);
+  border-radius: 999px;
+  padding: 0 6px;
+  margin: 0;
+  height: auto;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 300;
+  line-height: inherit;
+  color: var(--color-muted);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.board-card-meta .board-card-project:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+.board-card-meta .board-card-project:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
 /* one-hover dismiss on auto-landed capture todos (delete = dismiss) */
 .board-card-dismiss {
   position: absolute;
@@ -548,8 +580,9 @@
 .board-card-dismiss:hover { color: var(--warn); }
 .board-card-dismiss:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
 
-/* ── header channel filter ── */
-.board-channel-filter {
+/* ── header channel + project filters ── */
+.board-channel-filter,
+.board-project-filter {
   background: none;
   border: 1px solid transparent;
   border-radius: 2px;
@@ -560,8 +593,11 @@
   cursor: pointer;
   transition: color 150ms ease-out, border-color 150ms ease-out;
 }
-.board-channel-filter:hover { color: var(--fg); border-color: var(--border); }
-.board-channel-filter:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
+.board-project-filter { max-width: 180px; }
+.board-channel-filter:hover,
+.board-project-filter:hover { color: var(--fg); border-color: var(--border); }
+.board-channel-filter:focus-visible,
+.board-project-filter:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
 
 /* ── day column footer (planned-time total) ── */
 .board-col-foot {
@@ -887,5 +923,6 @@
   .board-col.overdue-col { min-width: 150px; flex: 0 0 42vw; }
   .board-header { padding: 10px 12px 8px; gap: 10px; }
   .board-range { display: none; }
+  .board-project-filter { max-width: 34vw; }
   .board-detail-backdrop { padding: 4vh 8px 8px; }
 }
