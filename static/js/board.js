@@ -56,6 +56,7 @@ let _tasks = [];
 let _models = [];
 let _channelFilter = null;
 let _open = false;
+let _view = 'today';   // Workspace view: 'today' | 'projects'
 let _dragId = null;
 let _pollTimer = null;
 let _detailCardId = null;
@@ -1057,6 +1058,40 @@ function _renderDetail(t) {
   document.body.appendChild(backdrop);
 }
 
+/* ── Workspace view switcher (DESIGN-workspace.md step 1) ──
+   The board window IS the Workspace: one window, views swapped in place
+   in the modal body. "today" is the untouched board; "projects" is a stub
+   until the feat/projects-view mod ships static/js/projects.js.
+
+   Mount contract for projects.js (built in a later step — the file does
+   not exist yet):
+   - container: the `#projects-pane` element inside the board modal body
+     (shown only while the projects view is front);
+   - every switch to the projects view calls
+     `window.odysseusProjects.mount(container, opts)` when it exists —
+     `opts` passes through from the caller (e.g. `{ project: '<id>' }`
+     from the future board project chip). Until projects.js registers
+     that hook, the static stub markup from openBoard stays in place. */
+
+export function switchWorkspaceView(name, opts = {}) {
+  if (name !== 'today' && name !== 'projects') return;
+  const modal = document.getElementById(MODAL_ID);
+  if (!modal) return;
+  _view = name;
+  modal.querySelectorAll('.board-view-tab').forEach(b => {
+    const on = b.dataset.view === name;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  document.getElementById('board-pane')
+    ?.classList.toggle('board-view-off', name !== 'today');
+  const projectsPane = document.getElementById('projects-pane');
+  projectsPane?.classList.toggle('board-view-off', name !== 'projects');
+  if (name === 'projects' && projectsPane) {
+    window.odysseusProjects?.mount?.(projectsPane, opts);
+  }
+}
+
 /* ── open / close / bootstrap ──
    Stock floating-window model (operator direction 2026-08-21): the board is a
    draggable/resizable/minimizable `.modal` window like every built-in tool —
@@ -1085,11 +1120,20 @@ export async function openBoard() {
     <div class="modal-content board-modal-content">
       <div class="modal-header">
         <h4>${BOARD_ICON}<span style="margin-left:6px">My Tasks</span></h4>
+        <div class="board-view-tabs" role="tablist" aria-label="Workspace views">
+          <button type="button" class="board-view-tab active" data-view="today"
+            role="tab" aria-selected="true">Today</button>
+          <button type="button" class="board-view-tab" data-view="projects"
+            role="tab" aria-selected="false">Projects</button>
+        </div>
         <span style="flex:1"></span>
         <button class="close-btn" title="Close">✖</button>
       </div>
       <div class="modal-body board-modal-body">
         <div id="board-pane" role="region" aria-label="My Tasks board"></div>
+        <div id="projects-pane" class="board-view-off" role="region" aria-label="Projects">
+          <div class="board-empty-hint">Projects — coming online</div>
+        </div>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -1102,6 +1146,9 @@ export async function openBoard() {
     closeFn: _teardown,
   });
   Modals.injectMinimizeButton(modal, MODAL_ID);
+  _view = 'today';   // the Workspace always opens on Today
+  modal.querySelectorAll('.board-view-tab').forEach(b =>
+    b.addEventListener('click', () => switchWorkspaceView(b.dataset.view)));
   modal.querySelector('.close-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     Modals.close(MODAL_ID);
@@ -1121,6 +1168,7 @@ export async function openBoard() {
 // Full teardown — invoked by Modals.close (✖ button, closeBoard, Esc).
 function _teardown() {
   _open = false;
+  _view = 'today';
   _lastPaint = '';
   _closeDetail();
   document.getElementById('board-picker-backdrop')?.remove();
@@ -1190,6 +1238,8 @@ function _injectDom() {
       return;
     }
     // Sunsama's "add a task with A" — quick-add into Today.
+    // Only while the Today view is front; other Workspace views hide the board.
+    if (_view !== 'today') return;
     if ((e.key === 'a' || e.key === 'A') && !e.metaKey && !e.ctrlKey && !e.altKey) {
       const tag = (document.activeElement?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' ||
@@ -1215,4 +1265,6 @@ if (document.readyState === 'loading') {
 }
 
 // Console escape hatch: localStorage.setItem('board-home-view','off')
-window.odysseusBoard = { open: openBoard, close: closeBoard };
+// switchWorkspaceView('projects', { project: '<id>' }) is the hook a later
+// board-chip step uses to jump straight to a project.
+window.odysseusBoard = { open: openBoard, close: closeBoard, switchWorkspaceView };

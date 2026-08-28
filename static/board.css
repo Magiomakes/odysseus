@@ -37,6 +37,55 @@
   padding: 0;
   overflow: hidden;
 }
+
+/* ── Workspace view switcher (DESIGN-workspace.md step 1) ──
+   Mod-local echo of the stock .lib-tab / .admin-tab strip (style.css),
+   seated inline in the modal header so views swap inside the one window.
+   The negative bottom margin drops the active underline onto the header's
+   own border, the stock fused-tab look. */
+.board-view-tabs {
+  display: flex;
+  align-self: flex-end;
+  margin-left: 18px;
+  margin-bottom: -6px;   /* header bottom padding is 6px */
+}
+.board-view-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 12px 5px;
+  cursor: pointer;
+  transition: color 0.1s, border-color 0.1s;
+}
+.board-view-tab:hover { color: var(--fg); }
+.board-view-tab.active {
+  color: var(--accent, var(--color-accent));
+  border-bottom-color: var(--accent, var(--color-accent));
+}
+.board-view-tab:focus-visible { outline: 1px solid var(--accent, var(--color-accent)); outline-offset: 1px; }
+
+/* View swap: the pane not in front is display-hidden, never torn down —
+   Today keeps its DOM, scroll machinery, and poll loop untouched. */
+.board-view-off { display: none !important; }
+
+/* Projects stub (step-1 placeholder — projects.js replaces it on mount). */
+#projects-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-family, 'Fira Code', monospace);
+}
+#projects-pane .board-empty-hint {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
 /* Center in the chat area like stock tool windows (style.css does this via
    an id list we deliberately don't edit — same rule, mod-local). */
 @media (min-width: 769px) {
