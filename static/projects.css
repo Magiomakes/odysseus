@@ -1,0 +1,361 @@
+/* ============================================
+   Projects — even-odysseus world-model container view (Workspace tab).
+   Terminal aesthetic extending the host tokens, same discipline as
+   board.css / bridge.css. Accent budget for this view: (1) the file
+   drop-target highlight, (2) the browse/upload action, (3) focus-visible
+   outlines. Nothing else — the gap lines stay muted on purpose.
+   ============================================ */
+
+/* Lift board.css's stub centering once real content mounts; the pane
+   becomes a scroll column filling the modal body. */
+#projects-pane.projects-live {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+/* Stock mobile rules force `button { height:32px }` and
+   `.modal-body button { margin-top:6px }`, which clips multi-line rows —
+   our buttons size to their content. */
+#projects-pane button { height: auto; margin-top: 0; }
+
+#projects-pane .prj-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── shared bits ── */
+.prj-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 20px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  flex-shrink: 0;
+}
+.prj-sub {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--color-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.prj-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.prj-label-spacer { flex: 1; }
+.prj-empty {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 300;
+  padding: 24px 20px;
+  text-align: center;
+}
+
+/* Quiet problem states (unconfigured / brain unreachable). */
+.prj-quiet {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 300;
+}
+.prj-retry {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+.prj-retry:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg) 45%, var(--border));
+}
+.prj-retry:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+
+/* ── list view ── */
+.prj-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 20px 20px;
+}
+.prj-row {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-family: inherit;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 4px;
+  cursor: pointer;
+  transition: color 150ms ease-out;
+}
+.prj-row:hover .prj-rname { color: var(--fg); }
+.prj-row:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: -1px;
+}
+.prj-rname {
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 150ms ease-out;
+}
+.prj-kind {
+  font-size: 10px;
+  font-weight: 300;
+  color: var(--color-muted);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 1px 5px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+.prj-rstatus {
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+.prj-rmeta {
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Archived group — collapsed by default, omitted entirely when empty.
+   style.css tints EVERY details/summary with --hl-string chrome; this is
+   a quiet list section, not a chat disclosure, so neutralize it here. */
+.prj-archived,
+.prj-archived[open] {
+  background: none;
+  border: none;
+  border-radius: 0;
+  margin: 18px 0 0;
+  padding: 0;
+  overflow: visible;
+  transition: none;
+}
+.prj-archived[open] > :not(summary) { animation: none; }
+.prj-archived summary,
+.prj-archived[open] summary {
+  background: none;
+  border-bottom: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  cursor: pointer;
+  padding: 6px 4px;
+}
+.prj-archived summary:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+.prj-archived .prj-row .prj-rname { color: var(--color-muted); }
+
+/* ── project page ── */
+.prj-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 24px 32px;
+  max-width: 860px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.prj-back {
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+  transition: color 150ms ease-out;
+}
+.prj-back:hover { color: var(--fg); }
+.prj-back:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+.prj-title { font-size: 18px; font-weight: 600; margin: 8px 0 2px; }
+.prj-meta {
+  font-size: 11px;
+  color: var(--color-muted);
+  margin-bottom: 14px;
+}
+
+/* State block — plain-speech facts, then the honest gaps. */
+.prj-state {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px 16px 12px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.prj-summary { margin: 6px 0 10px; }
+.prj-fact { margin: 4px 0; }
+.prj-fact strong { font-weight: 600; }
+.prj-gap {
+  margin: 4px 0;
+  color: var(--color-muted);
+  font-weight: 300;
+}
+.prj-gap strong { font-weight: 600; color: var(--color-muted); }
+.prj-gap-q {
+  display: inline-block;
+  width: 14px;
+  font-weight: 600;
+}
+.prj-loops { margin: 10px 0 4px; }
+.prj-loops ul { margin: 4px 0; padding-left: 18px; }
+.prj-loops li { margin: 2px 0; }
+
+/* ── files section (the whole section is the drop target) ── */
+.prj-files {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px 16px 14px;
+  transition: border-color 150ms ease-out, background-color 150ms ease-out;
+}
+.prj-files.drop-target {
+  border-color: var(--accent, var(--color-accent));
+  background: color-mix(in srgb, var(--accent, var(--color-accent)) 7%, transparent);
+}
+.prj-files.drop-target .prj-drop {
+  border-color: var(--accent, var(--color-accent));
+  color: var(--accent, var(--color-accent));
+}
+
+/* browse — the page's one primary action, so it alone gets the accent
+   (border-only at rest; fills on hover — the bridge-askai recipe). */
+.prj-browse {
+  background: none;
+  border: 1px solid var(--accent, var(--color-accent));
+  border-radius: 4px;
+  color: var(--accent, var(--color-accent));
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+.prj-browse:hover {
+  background: var(--accent, var(--color-accent));
+  color: var(--bg, #fff);
+}
+.prj-browse:active { transform: translateY(1px); }
+.prj-browse:disabled { opacity: 0.4; cursor: default; }
+.prj-browse:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 2px;
+}
+
+.prj-file-list { margin: 8px 0 0; }
+.prj-file {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 7px 2px;
+  font-size: 12px;
+}
+.prj-file:last-child { border-bottom: none; }
+.prj-fname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prj-fmeta {
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.prj-fdel {
+  background: none;
+  border: none;
+  color: var(--color-muted);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0 4px;
+  cursor: pointer;
+  transition: color 150ms ease-out;
+}
+.prj-fdel:hover { color: var(--red, #c44); }
+.prj-fdel:focus-visible {
+  outline: 1px solid var(--accent, var(--color-accent));
+  outline-offset: 1px;
+}
+
+/* The dashed target strip (echo of .board-agent-drop). Empty folder →
+   it grows into the inviting empty state. */
+.prj-drop {
+  margin-top: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 2px;
+  padding: 10px 12px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 300;
+  transition: border-color 150ms ease-out, color 150ms ease-out;
+}
+.prj-drop.prj-drop-empty {
+  padding: 44px 16px;
+  font-size: 12px;
+}
+
+.prj-upload-status { margin-top: 8px; font-size: 11px; line-height: 1.6; }
+.prj-up-busy { color: var(--color-muted); }
+.prj-up-ok { color: var(--fg); }
+.prj-up-warn { color: var(--color-muted); }
+.prj-up-bad { color: var(--red, #c44); }
+
+@media (prefers-reduced-motion: reduce) {
+  #projects-pane * { transition-duration: 1ms !important; }
+}
+
+/* Phone width: rows stack their metadata under the name. */
+@media (max-width: 700px) {
+  .prj-row { flex-wrap: wrap; gap: 4px 10px; padding: 9px 2px; }
+  .prj-rname { flex-basis: 100%; }
+  .prj-page { padding: 8px 16px 28px; }
+  .prj-state, .prj-files { padding: 8px 12px 12px; }
+}
