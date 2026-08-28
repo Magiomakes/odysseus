@@ -711,6 +711,10 @@ app.include_router(setup_cleanup_routes(session_manager))
 from routes.personal_routes import setup_personal_routes
 app.include_router(setup_personal_routes(personal_docs_mgr, rag_manager, rag_available))
 
+# Projects view (even-odysseus world model: brain proxy + per-project doc folders)
+from routes.projects_routes import setup_projects_routes
+app.include_router(setup_projects_routes(personal_docs_mgr))
+
 # Embedding model management
 from routes.embedding_routes import setup_embedding_routes
 app.include_router(setup_embedding_routes())
