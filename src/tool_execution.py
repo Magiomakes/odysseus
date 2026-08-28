@@ -769,6 +769,15 @@ async def _execute_tool_block_impl(
             or {"error": f"{tool}: execution failed", "exit_code": 1}
         if tool in ("edit_document", "suggest_document") and "title" in (result or {}):
             desc = f"{tool}: {result.get('title', '')}"
+    elif tool == "save_to_project":
+        # Dispatched through the ctx-passing document-tools path, NOT the
+        # dynamic_handlers catch-all: the handler needs `owner` in ctx so the
+        # RAG chunks it writes carry the same owner-scoped metadata as the
+        # Projects-view upload route (retrieval filters on it).
+        first_line = content.split(chr(10))[0].strip()[:80]
+        desc = f"save_to_project: {first_line}" if first_line else tool
+        result = await _document_tool_dispatch(tool, content, session_id, owner) \
+            or {"error": "save_to_project: execution failed", "exit_code": 1}
     elif tool == "search_chats":
         query = content.split("\n")[0].strip()
         desc = f"search_chats: {query[:80]}"

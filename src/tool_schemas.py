@@ -255,6 +255,23 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "save_to_project",
+            "description": "Save/file text content into one of the user's PROJECTS (the Workspace Projects view). Use when the user says 'save this to <project>', 'file this under the <X> project', 'add these notes to <project>'. Writes a file into that project's document folder and indexes it for retrieval, so it immediately appears in the project's file list and is findable in any chat. NOT for editor documents (use create_document) and NOT for arbitrary disk files (use write_file).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project name (case-insensitive) or numeric project id"},
+                    "content": {"type": "string", "description": "The text content to save into the project"},
+                    "title": {"type": "string", "description": "Optional title — becomes the filename (default: derived from the first content line)"},
+                    "format": {"type": "string", "description": "Optional file format: md (default) or txt"}
+                },
+                "required": ["project", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_document",
             "description": "Edit a document OPEN IN THE EDITOR PANEL (created via create_document) — NOT a file on disk. For files on disk (home folder, project files, anything with a path like ~/x.txt or /path/to/file) use edit_file instead. Targeted find-and-replace with multiple FIND/REPLACE pairs per call; use for any edit smaller than a full rewrite. Do NOT send the whole file back via update_document for small edits.",
             "parameters": {
@@ -1454,6 +1471,14 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
         if args.get("language"):
             parts.append(args["language"])
         parts.append(args.get("content", ""))
+        content = "\n".join(parts)
+    elif tool_type == "save_to_project":
+        parts = [f"<project>{args.get('project', '')}</project>"]
+        if args.get("title"):
+            parts.append(f"<title>{args['title']}</title>")
+        if args.get("format"):
+            parts.append(f"<format>{args['format']}</format>")
+        parts.append(f"<content>{args.get('content', '')}</content>")
         content = "\n".join(parts)
     elif tool_type == "edit_document":
         blocks = []
