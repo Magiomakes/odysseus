@@ -153,11 +153,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Archived group — collapsed by default, omitted entirely when empty.
-   style.css tints EVERY details/summary with --hl-string chrome; this is
-   a quiet list section, not a chat disclosure, so neutralize it here. */
-.prj-archived,
-.prj-archived[open] {
+/* Collapsed list groups (People / Areas / Archived) — the Archived idiom
+   generalized. Collapsed by default, omitted entirely when empty.
+   style.css tints EVERY details/summary with --hl-string chrome; these are
+   quiet list sections, not chat disclosures, so neutralize it here. */
+.prj-group,
+.prj-group[open] {
   background: none;
   border: none;
   border-radius: 0;
@@ -166,9 +167,9 @@
   overflow: visible;
   transition: none;
 }
-.prj-archived[open] > :not(summary) { animation: none; }
-.prj-archived summary,
-.prj-archived[open] summary {
+.prj-group[open] > :not(summary) { animation: none; }
+.prj-group summary,
+.prj-group[open] summary {
   background: none;
   border-bottom: none;
   font-size: 11px;
@@ -179,10 +180,11 @@
   cursor: pointer;
   padding: 6px 4px;
 }
-.prj-archived summary:focus-visible {
+.prj-group summary:focus-visible {
   outline: 1px solid var(--accent, var(--color-accent));
   outline-offset: 1px;
 }
+/* Only the graveyard dims its rows — People/Areas are live sections. */
 .prj-archived .prj-row .prj-rname { color: var(--color-muted); }
 
 /* ── project page ── */
@@ -242,6 +244,16 @@
 .prj-loops { margin: 10px 0 4px; }
 .prj-loops ul { margin: 4px 0; padding-left: 18px; }
 .prj-loops li { margin: 2px 0; }
+
+/* Honest footer on area pages ("this fills in as the morning questions
+   ask about it") — quiet, not a disclaimer banner. */
+.prj-foot {
+  margin: 14px 2px 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 300;
+  line-height: 1.5;
+}
 
 /* ── files section (the whole section is the drop target) ── */
 .prj-files {
