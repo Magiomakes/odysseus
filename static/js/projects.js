@@ -518,8 +518,9 @@ function _personState(d) {
 }
 
 function _renderPersonPage(body, d) {
+  // NB: no relationship one-liner up here — the state block's "where
+  // things stand" line owns it (rendered twice it read as a stutter).
   const bits = [];
-  if (d.line) bits.push(d.line);
   if (d.last_activity) bits.push(`last activity ${_date(d.last_activity)}`);
   body.innerHTML = `
     <div class="prj-page">

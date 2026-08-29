@@ -17,6 +17,19 @@
    `.modal-body button { margin-top:6px }`, which clips multi-line rows —
    our buttons size to their content. */
 #projects-pane button { height: auto; margin-top: 0; }
+/* Stock global `input/button:hover` paints border-color:var(--fg) +
+   background:var(--panel) on EVERY button — on the pane's quiet buttons
+   (rows, back, delete, retry) that reads as a boxed chip. They declare
+   their own hover language (color shifts only); pin the rest. */
+#projects-pane .prj-row:hover,
+#projects-pane .prj-back:hover,
+#projects-pane .prj-fdel:hover,
+#projects-pane .prj-retry:hover {
+  background: none;
+}
+#projects-pane .prj-row:hover { border-color: var(--border); }
+#projects-pane .prj-back:hover,
+#projects-pane .prj-fdel:hover { border-color: transparent; }
 
 #projects-pane .prj-body {
   flex: 1;
