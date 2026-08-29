@@ -1188,15 +1188,15 @@ export async function openBoard() {
           <button type="button" class="board-view-tab active" data-view="today"
             role="tab" aria-selected="true">Today</button>
           <button type="button" class="board-view-tab" data-view="projects"
-            role="tab" aria-selected="false">Projects</button>
+            role="tab" aria-selected="false">World Model</button>
         </div>
         <span style="flex:1"></span>
         <button class="close-btn" title="Close">✖</button>
       </div>
       <div class="modal-body board-modal-body">
         <div id="board-pane" role="region" aria-label="My Tasks board"></div>
-        <div id="projects-pane" class="board-view-off" role="region" aria-label="Projects">
-          <div class="board-empty-hint">Projects — coming online</div>
+        <div id="projects-pane" class="board-view-off" role="region" aria-label="World Model">
+          <div class="board-empty-hint">World Model — coming online</div>
         </div>
       </div>
     </div>`;
