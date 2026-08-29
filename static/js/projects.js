@@ -29,7 +29,9 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // mirrors the server's per-file ca
 
 let _root = null;        // the #projects-pane element we mounted into
 let _projects = [];
-let _detailId = null;    // entity id while a project page is front
+let _world = null;       // {people, areas} — the browse groups (may be null)
+let _detailId = null;    // entity id while a page is front
+let _detailKind = 'project';  // 'project' | 'world' — which detail route to hit
 let _detail = null;      // last-loaded detail payload (files re-render w/o refetch)
 let _uploading = false;
 let _keysWired = false;
@@ -100,7 +102,7 @@ function mount(container, opts = {}) {
   if (!_root) return;
   if (opts.project != null) {
     const id = Number(opts.project);
-    if (Number.isFinite(id)) { _detailId = id; _detail = null; }
+    if (Number.isFinite(id)) { _detailId = id; _detailKind = 'project'; _detail = null; }
   }
   _wireKeys();
   _refresh();
@@ -131,13 +133,18 @@ async function _refresh() {
   const body = _root?.querySelector('.prj-body');
   if (!body) return;
   if (_detailId != null) { await _renderDetail(body); return; }
-  try {
-    const data = await _api('GET', '/api/projects');
-    _projects = data.projects || [];
-  } catch (e) {
-    _renderProblem(body, e);
+  // The browse groups (people/areas) load alongside the projects; a
+  // failure there degrades to a projects-only list, never an error page.
+  const [proj, world] = await Promise.allSettled([
+    _api('GET', '/api/projects'),
+    _api('GET', '/api/projects/world'),
+  ]);
+  if (proj.status === 'rejected') {
+    _renderProblem(body, proj.reason);
     return;
   }
+  _projects = proj.value.projects || [];
+  _world = world.status === 'fulfilled' ? world.value : null;
   _renderList(body);
 }
 
@@ -185,33 +192,67 @@ function _projectRow(p) {
     <span class="prj-rmeta">${_esc(_rowMeta(p))}</span>`;
   row.addEventListener('click', () => {
     _detailId = p.id;
+    _detailKind = 'project';
     _detail = null;
     _refresh();
   });
   return row;
 }
 
+// A person or area row in the browse groups: name + the server-computed
+// plain-speech line ("not yet reached out" / "2 obligations, 2 never
+// recorded"). The server owns the words; this stays dumb.
+function _worldRow(w) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'prj-row';
+  row.innerHTML = `
+    <span class="prj-rname">${_esc(w.name)}</span>
+    <span class="prj-rstatus">${_esc(w.line || '')}</span>`;
+  row.addEventListener('click', () => {
+    _detailId = w.id;
+    _detailKind = 'world';
+    _detail = null;
+    _refresh();
+  });
+  return row;
+}
+
+// Collapsed <details> section (the Archived idiom). `muted` marks the
+// graveyard flavor — archived rows dim their names, live groups don't.
+function _group(label, items, rowFn, { muted = false, open = false } = {}) {
+  const det = document.createElement('details');
+  det.className = muted ? 'prj-group prj-archived' : 'prj-group';
+  if (open) det.open = true;
+  det.innerHTML = `<summary>${_esc(label)}
+    <span class="prj-sub">${items.length}</span></summary>`;
+  for (const it of items) det.appendChild(rowFn(it));
+  return det;
+}
+
 function _renderList(body) {
   const active = _projects.filter(p => !_isArchived(p));
   const archived = _projects.filter(_isArchived);
+  const people = _world?.people || [];
+  const areas = _world?.areas || [];
   body.innerHTML = `
     <div class="prj-col-head"><span>Projects</span>
       <span class="prj-sub">${_projects.length}</span></div>
     <div class="prj-list"></div>`;
   const list = body.querySelector('.prj-list');
-  if (!_projects.length) {
+  if (!_projects.length && !people.length && !areas.length) {
     list.innerHTML = `<div class="prj-empty">No projects yet — the nightly
       brain creates them as it learns what you're working on.</div>`;
     return;
   }
   for (const p of active) list.appendChild(_projectRow(p));
+  // World-model browse groups (operator-decided structure 2026-08-28: one
+  // tab, sections — not new tabs). Archived stays last: graveyard at the
+  // bottom.
+  if (people.length) list.appendChild(_group('People', people, _worldRow));
+  if (areas.length) list.appendChild(_group('Areas', areas, _worldRow));
   if (archived.length) {
-    const det = document.createElement('details');
-    det.className = 'prj-archived';
-    det.innerHTML = `<summary>Archived
-      <span class="prj-sub">${archived.length}</span></summary>`;
-    for (const p of archived) det.appendChild(_projectRow(p));
-    list.appendChild(det);
+    list.appendChild(_group('Archived', archived, _projectRow, { muted: true }));
   }
 }
 
@@ -413,9 +454,135 @@ function _wireDrop(sec, d) {
   });
 }
 
+/* ── person / area pages (world-model browse) ── */
+
+function _gapLine(name, note) {
+  return `<p class="prj-gap"><span class="prj-gap-q">?</span>
+    <strong>${_esc(name)}</strong> — ${_esc(note)}</p>`;
+}
+
+function _wireBack(body) {
+  body.querySelector('.prj-back').addEventListener('click', () => {
+    _detailId = null;
+    _detail = null;
+    _refresh();
+  });
+}
+
+// A person's state in plain words: who they are (roles, who they report
+// to), where things stand, what they hold, what's waiting. Blanks render
+// as visible gaps — same honesty rule as the project page.
+function _personState(d) {
+  const facts = [];
+  const gaps = [];
+  const mine = (e) => e.person_id === d.id;
+
+  const closeness = (d.meta?.closeness || '').trim();
+  if (closeness) facts.push(_fact('relationship', closeness));
+  let who = 0;
+  for (const e of d.edges || []) {
+    if (e.kind === 'role' && mine(e) && e.entity_name) {
+      facts.push(_fact('role', `${e.label || 'a role'} for ${e.entity_name}`));
+      who++;
+    } else if (e.kind === 'reports-to' && mine(e) && e.entity_name) {
+      facts.push(`<p class="prj-fact">Reports to <strong>${_esc(e.entity_name)}</strong>.</p>`);
+      who++;
+    } else if (e.kind === 'reports-to' && e.entity_id === d.id && e.person_name) {
+      facts.push(`<p class="prj-fact">${_esc(e.person_name)} reports to them.</p>`);
+      who++;
+    } else if (e.kind === 'delegation' && mine(e) && e.entity_name) {
+      facts.push(`<p class="prj-fact">Holds <strong>${_esc(e.label || 'a piece of it')}</strong>
+        for ${_esc(e.entity_name)}.</p>`);
+    }
+  }
+  if (!who && !closeness) gaps.push(['who they are', 'nothing recorded yet']);
+
+  if (d.relationship_line) {
+    facts.push(_fact('where things stand', d.relationship_line));
+  }
+
+  for (const f of d.facets || []) {
+    const val = (f.value || '').trim();
+    if (val) facts.push(_fact(f.name, val));
+    else gaps.push([f.name, 'nothing recorded yet']);
+  }
+
+  const loops = d.open_loops || [];
+  facts.push(`<div class="prj-loops"><div class="prj-label">Open loops</div>
+    ${loops.length
+      ? `<ul>${loops.map(l => `<li>${_esc(l.line || '')}</li>`).join('')}</ul>`
+      : '<p class="prj-gap">nothing waiting on either side</p>'}</div>`);
+
+  const gapHtml = gaps.map(([n, note]) => _gapLine(n, note)).join('');
+  return `<div class="prj-state">${facts.join('')}${gapHtml}</div>`;
+}
+
+function _renderPersonPage(body, d) {
+  const bits = [];
+  if (d.line) bits.push(d.line);
+  if (d.last_activity) bits.push(`last activity ${_date(d.last_activity)}`);
+  body.innerHTML = `
+    <div class="prj-page">
+      <button type="button" class="prj-back">‹ projects</button>
+      <div class="prj-title">${_esc(d.name)}</div>
+      <div class="prj-meta">${_esc(bits.join(' · '))}</div>
+      ${_personState(d)}
+    </div>`;
+  _wireBack(body);
+}
+
+// The area page is its obligations, each with the server-computed state
+// line ("winter tires — never recorded; comes due around November").
+// No files, no editing — v1 read-only, and an honest footer: this page
+// fills in as the morning questions ask about it.
+function _renderAreaPage(body, d) {
+  const bits = [];
+  if (d.rollup?.line) bits.push(d.rollup.line);
+  if (d.last_activity) bits.push(`last activity ${_date(d.last_activity)}`);
+  const obs = d.obligations || [];
+  const rows = obs.map(o => {
+    const imp = (o.importance || '').trim();
+    return `<p class="prj-fact">
+      <strong>${_esc(o.name)}</strong> — ${_esc(o.line || '')}${imp ? ` · matters: ${_esc(imp)}` : ''}</p>`;
+  }).join('');
+  body.innerHTML = `
+    <div class="prj-page">
+      <button type="button" class="prj-back">‹ projects</button>
+      <div class="prj-title">${_esc(d.name)}</div>
+      <div class="prj-meta">${_esc(bits.join(' · '))}</div>
+      <div class="prj-state">
+        ${obs.length ? rows : _gapLine('obligations', 'nothing tracked here yet')}
+      </div>
+      <p class="prj-foot">This page fills in as the morning questions ask
+        about ${_esc(d.name)} — nothing here is guessed.</p>
+    </div>`;
+  _wireBack(body);
+}
+
+async function _renderWorldDetail(body) {
+  if (!_detail || _detail.id !== _detailId) {
+    body.innerHTML = `<div class="prj-empty">Loading…</div>`;
+    try {
+      _detail = await _api('GET', `/api/projects/world/${_detailId}`);
+    } catch (e) {
+      if (e.status === 404) {
+        showToast('Nothing found for that id');
+        _detailId = null;
+        _refresh();
+        return;
+      }
+      _renderProblem(body, e);
+      return;
+    }
+  }
+  if (_detail.kind === 'person') _renderPersonPage(body, _detail);
+  else _renderAreaPage(body, _detail);
+}
+
 /* ── project page ── */
 
 async function _renderDetail(body) {
+  if (_detailKind === 'world') { await _renderWorldDetail(body); return; }
   if (!_detail || _detail.id !== _detailId) {
     body.innerHTML = `<div class="prj-empty">Loading…</div>`;
     try {
