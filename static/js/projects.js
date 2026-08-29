@@ -154,7 +154,7 @@ function _renderProblem(body, err) {
   const unconfigured = err.status === 503;
   body.innerHTML = `
     <div class="prj-quiet">
-      <div>${unconfigured ? 'Projects is not configured.'
+      <div>${unconfigured ? 'World model is not configured.'
         : 'The brain service isn’t reachable right now.'}</div>
       ${unconfigured ? '' : '<button type="button" class="prj-retry">Retry</button>'}
     </div>`;
@@ -236,8 +236,8 @@ function _renderList(body) {
   const people = _world?.people || [];
   const areas = _world?.areas || [];
   body.innerHTML = `
-    <div class="prj-col-head"><span>Projects</span>
-      <span class="prj-sub">${_projects.length}</span></div>
+    <div class="prj-col-head"><span>World Model</span>
+      <span class="prj-sub">${_projects.length + people.length + areas.length}</span></div>
     <div class="prj-list"></div>`;
   const list = body.querySelector('.prj-list');
   if (!_projects.length && !people.length && !areas.length) {
